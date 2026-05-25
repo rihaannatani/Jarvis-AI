@@ -20,11 +20,51 @@ function stripHtml(str) {
   return str.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Hardcoded overrides for local Tempe/ASU spots that the API struggles with.
+// Keys are lowercase substrings — first match wins.
+const KNOWN_LOCATIONS = [
+  { match: ['gogoavocado', 'gogo avocado', 'gogo'],  address: '707 S Farmer Ave Suite 125, Tempe, AZ 85281' },
+  { match: ['brickyard'],                             address: '699 S Mill Ave, Tempe, AZ 85281' },
+  { match: ['sun devil stadium'],                     address: '500 E Veterans Way, Tempe, AZ 85281' },
+  { match: ['asu', 'arizona state university'],       address: 'Arizona State University, Tempe, AZ 85281' },
+];
+
+async function resolveLocation(query) {
+  if (!query) return query;
+  const q = query.toLowerCase().trim();
+
+  // Check hardcoded overrides first
+  for (const entry of KNOWN_LOCATIONS) {
+    if (entry.match.some((m) => q.includes(m))) {
+      logger.info(`[maps] Resolved "${query}" → hardcoded: ${entry.address}`);
+      return entry.address;
+    }
+  }
+
+  // Fall back to Places Text Search to resolve casual names to full addresses
+  try {
+    const res = await axios.get(`${BASE}/place/textsearch/json`, {
+      params: { query, key: apiKey() },
+    });
+    if (res.data.results?.length) {
+      const resolved = res.data.results[0].formatted_address;
+      logger.info(`[maps] Resolved "${query}" → Places API: ${resolved}`);
+      return resolved;
+    }
+  } catch (err) {
+    logger.warn(`[maps] resolveLocation Places lookup failed for "${query}":`, err.message);
+  }
+
+  return query; // fall back to original string
+}
+
 async function getTravelTime(destination, origin, mode = 'driving') {
   try {
+    const resolvedDest = await resolveLocation(destination);
+    const resolvedOrigin = await resolveLocation(origin) || homeAddress();
     const params = {
-      origins: origin || homeAddress(),
-      destinations: destination,
+      origins: resolvedOrigin,
+      destinations: resolvedDest,
       mode,
       key: apiKey(),
       units: 'imperial',
@@ -48,8 +88,8 @@ async function getTravelTime(destination, origin, mode = 'driving') {
       durationInTrafficSeconds: el.duration_in_traffic?.value || el.duration?.value || 0,
       durationSeconds: el.duration?.value || 0,
       distance: el.distance?.text || 'unknown',
-      origin: params.origins,
-      destination,
+      origin: resolvedOrigin,
+      destination: resolvedDest,
     };
   } catch (err) {
     logger.error('[maps] getTravelTime failed:', err.message);
@@ -88,9 +128,11 @@ async function findNearbyPlaces(query, location) {
 
 async function getDirections(destination, origin, mode = 'driving') {
   try {
+    const resolvedDest = await resolveLocation(destination);
+    const resolvedOrigin = await resolveLocation(origin) || homeAddress();
     const params = {
-      origin: origin || homeAddress(),
-      destination,
+      origin: resolvedOrigin,
+      destination: resolvedDest,
       mode,
       key: apiKey(),
       units: 'imperial',
@@ -109,8 +151,8 @@ async function getDirections(destination, origin, mode = 'driving') {
     const leg = route.legs[0];
     const steps = (leg.steps || []).slice(0, 5).map((s) => stripHtml(s.html_instructions));
 
-    const originEnc = encodeURIComponent(params.origin);
-    const destEnc = encodeURIComponent(destination);
+    const originEnc = encodeURIComponent(resolvedOrigin);
+    const destEnc = encodeURIComponent(resolvedDest);
 
     return {
       summary: route.summary,
