@@ -110,6 +110,11 @@ function scoreEmail(email) {
 }
 
 async function checkNewEmails(sendAlertFn) {
+  if (!sendAlertFn) {
+    logger.warn('[email-watcher] No sendAlertFn provided — alerts will be logged only');
+    sendAlertFn = (msg) => { logger.info('[email-watcher] ALERT (no send fn):', msg.slice(0, 120)); return Promise.resolve(); };
+  }
+
   // 24-hour fallback so nothing slips through after a restart
   const lastCheck = state.getSetting('last_email_check');
   const sinceTimestamp = lastCheck

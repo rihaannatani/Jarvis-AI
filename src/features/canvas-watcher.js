@@ -25,8 +25,12 @@ function firstSentences(text, n = 3) {
   return sentences.slice(0, n).join(' ').trim() || cleaned.slice(0, 300);
 }
 
-// sendFn = null means silent seed mode (no Telegram messages)
+// sendFn = null/undefined means silent seed mode (no Telegram messages)
 async function runCanvasWatcher(sendFn) {
+  if (sendFn === undefined) {
+    logger.warn('[canvas-watcher] No sendFn provided — alerts will be logged only');
+    sendFn = (msg) => { logger.info('[canvas-watcher] ALERT (no send fn):', msg.slice(0, 120)); return Promise.resolve(); };
+  }
   const silent = sendFn === null;
 
   // Seed mode: if both tables are empty this is the very first run — populate without alerting
