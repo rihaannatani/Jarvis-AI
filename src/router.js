@@ -77,6 +77,22 @@ async function execute(toolName, toolInput, chatId) {
       return { count: drafts.length, drafts };
     }
 
+    case 'save_memory': {
+      const id = state.saveMemory(toolInput.category, toolInput.content, toolInput.source || 'auto');
+      logger.info(`[router] Memory saved [#${id}]: ${toolInput.content}`);
+      return { success: true, id };
+    }
+
+    case 'forget_memory': {
+      state.forgetMemory(toolInput.memory_id);
+      logger.info(`[router] Memory forgotten: #${toolInput.memory_id}`);
+      return { success: true };
+    }
+
+    case 'list_memories': {
+      return state.listActiveMemories();
+    }
+
     case 'get_travel_time': {
       const { getTravelTime } = require('./integrations/maps');
       const { destination, origin, mode } = toolInput;

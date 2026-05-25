@@ -84,6 +84,39 @@ const TOOLS = [
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
+    name: 'save_memory',
+    description: 'Persist an important fact, task, preference, or context so it survives across conversations',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'What to remember' },
+        category: {
+          type: 'string',
+          enum: ['task', 'fact', 'preference', 'reminder', 'context'],
+          description: 'task = something to do, fact = personal info, preference = how they like things, reminder = time-sensitive, context = general background',
+        },
+        source: { type: 'string', enum: ['user', 'auto'], description: "user = explicitly asked, auto = extracted from conversation" },
+      },
+      required: ['content', 'category'],
+    },
+  },
+  {
+    name: 'forget_memory',
+    description: 'Mark a memory as done or no longer relevant',
+    input_schema: {
+      type: 'object',
+      properties: {
+        memory_id: { type: 'number', description: 'The numeric ID shown as [#N] in the memory list' },
+      },
+      required: ['memory_id'],
+    },
+  },
+  {
+    name: 'list_memories',
+    description: 'Retrieve all currently active memories',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
     name: 'delete_calendar_event',
     description: 'Delete a calendar event by its event ID',
     input_schema: {
@@ -170,7 +203,7 @@ async function chat(chatId, userMessage) {
   // Save user message
   state.saveMessage(chatId, 'user', userMessage);
 
-  const systemPrompt = buildSystemPrompt();
+  const systemPrompt = buildSystemPrompt(state.getActiveMemories());
   let currentMessages = [...messages];
 
   // Agentic loop — Claude may call tools multiple times before final answer

@@ -60,6 +60,19 @@ db.exec(`
   );
 `);
 
+// Memories table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT,
+    content TEXT,
+    source TEXT DEFAULT 'auto',
+    active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 // Canvas watcher tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS seen_announcements (
@@ -222,9 +235,61 @@ function countSeenAssignments() {
   return db.prepare(`SELECT COUNT(*) as count FROM seen_assignments`).get().count;
 }
 
+// ─── Memory helpers ───────────────────────────────────────────────────────────
+
+const CATEGORY_LABELS = {
+  task: 'Tasks',
+  fact: 'Facts',
+  preference: 'Preferences',
+  reminder: 'Reminders',
+  context: 'Context',
+};
+
+function saveMemory(category, content, source = 'auto') {
+  const result = db.prepare(
+    `INSERT INTO memories (category, content, source) VALUES (?, ?, ?)`
+  ).run(category || 'fact', content, source);
+  return result.lastInsertRowid;
+}
+
+function forgetMemory(id) {
+  db.prepare(`UPDATE memories SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+}
+
+function listActiveMemories() {
+  return db.prepare(
+    `SELECT id, category, content, source, created_at FROM memories WHERE active = 1 ORDER BY category, created_at DESC`
+  ).all();
+}
+
+// Returns a formatted string ready to append to the system prompt, or '' if no memories.
+function getActiveMemories() {
+  const memories = listActiveMemories();
+  if (!memories.length) return '';
+
+  const byCategory = {};
+  for (const m of memories) {
+    const cat = m.category || 'context';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(m);
+  }
+
+  const sections = Object.entries(byCategory).map(([cat, mems]) => {
+    const label = CATEGORY_LABELS[cat] || (cat.charAt(0).toUpperCase() + cat.slice(1));
+    const bullets = mems.map((m) => `- [#${m.id}] ${m.content}`).join('\n');
+    return `*${label}:*\n${bullets}`;
+  });
+
+  return `\n\n## What I remember about you:\n${sections.join('\n\n')}`;
+}
+
 module.exports = {
   db,
   getMessages,
+  saveMemory,
+  forgetMemory,
+  listActiveMemories,
+  getActiveMemories,
   saveMessage,
   saveDraft,
   getPendingDrafts,
