@@ -7,8 +7,17 @@ const { getRecentEmails } = require('../integrations/gmail');
 const { hasToken } = require('../integrations/calendar');
 const { draftReplyPrompt } = require('../prompts/email');
 
-// Lowered from 6 — a plain direct email from a real person scores 6 now
-const IMPORTANCE_THRESHOLD = 5;
+const IMPORTANCE_THRESHOLD = 7;
+
+// Domains that are always noise — cap score at 3 regardless of other signals.
+// Exceptions are checked inline (e.g. PayPal fraud alerts).
+const NOISE_DOMAINS = [
+  'nextdoor.com', 'ubereats.com', 'uber.com', 'devpost.com',
+  'rocketmoney.com', 'everydaydose.com', 'openweathermap.org',
+];
+
+// edstem.org is noise unless the score would reach 8+ on its own merit
+const EDSTEM_NOISE_THRESHOLD = 8;
 
 function scoreEmail(email) {
   let score = 3; // base
@@ -16,7 +25,25 @@ function scoreEmail(email) {
   const from = (email.from || '').toLowerCase();
   const reasons = [];
 
-  // Automated/bulk sender signals (lower score)
+  // ── Hard caps: known noise domains ──────────────────────────────────────────
+  const isPayPal = from.includes('paypal.com');
+  const isEdstem = from.includes('edstem.org');
+  const isNoiseDomain = NOISE_DOMAINS.some((d) => from.includes(d));
+
+  if (isNoiseDomain) {
+    reasons.push('cap=3 noise domain');
+    return { score: 3, reasons };
+  }
+
+  if (isPayPal) {
+    const isSuspicious = subject.includes('unauthorized') || subject.includes('suspicious');
+    if (!isSuspicious) {
+      reasons.push('cap=3 paypal non-alert');
+      return { score: 3, reasons };
+    }
+  }
+
+  // ── Automated/bulk sender signals ────────────────────────────────────────────
   const isAutomated =
     from.includes('noreply') ||
     from.includes('no-reply') ||
@@ -44,21 +71,41 @@ function scoreEmail(email) {
   // Thread participation
   if (subject.startsWith('re:') || subject.startsWith('fwd:')) { score += 1; reasons.push('+1 thread reply'); }
 
-  // Urgency keywords in subject
+  // Urgency keywords in subject (+3)
   const urgentWords = [
     'urgent', 'asap', 'deadline', 'important', 'action required',
-    'time-sensitive', 'overdue', 'final notice', 'critical',
+    'time-sensitive', 'time sensitive', 'overdue', 'final notice', 'critical',
     'respond', 'response needed', 'please reply', 'follow up',
     'follow-up', 'reminder', 'expir',
   ];
   const matched = urgentWords.filter((w) => subject.includes(w));
   if (matched.length) { score += 3; reasons.push(`+3 urgent keyword (${matched[0]})`); }
 
-  // Educational/institutional senders
-  if (from.includes('.edu') || from.includes('asu.edu')) { score += 2; reasons.push('+2 .edu sender'); }
-  if (from.includes('canvas')) { score += 1; reasons.push('+1 canvas'); }
+  // Known important sender domains (+2)
+  const importantDomains = ['asu.edu', 'gmail.com', 'instructure.com'];
+  const matchedDomain = importantDomains.find((d) => from.includes(d));
+  if (matchedDomain) {
+    // instructure.com (Canvas) only boosted for grade-related subjects
+    if (matchedDomain === 'instructure.com') {
+      const gradeWords = ['grade', 'graded', 'feedback', 'score', 'submission'];
+      if (gradeWords.some((w) => subject.includes(w))) {
+        score += 2;
+        reasons.push('+2 canvas grade notification');
+      }
+    } else {
+      score += 2;
+      reasons.push(`+2 important domain (${matchedDomain})`);
+    }
+  }
 
   const final = Math.min(10, Math.max(1, score));
+
+  // edstem.org: only let through if score would be 8+
+  if (isEdstem && final < EDSTEM_NOISE_THRESHOLD) {
+    reasons.push(`cap=3 edstem below threshold (score was ${final})`);
+    return { score: 3, reasons };
+  }
+
   return { score: final, reasons };
 }
 
@@ -133,7 +180,7 @@ async function checkNewEmails(sendAlertFn) {
       logger.info(`[email-watcher] Sending alert for: "${email.subject}"`);
       await processImportantEmail(email, sendAlertFn);
     } catch (err) {
-      logger.error(`[email-watcher] Failed to process email ${email.id}:`, err.message);
+      logger.error(`[email-watcher] Failed to process email ${email.id}:`, err.message, err.stack);
     }
   }
 }
