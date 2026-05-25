@@ -3,88 +3,134 @@ const logger = require('../logger');
 const claude = require('../claude');
 const state = require('../state');
 const config = require('../config');
-const { getRecentEmailsAllAccounts, getEmailContent } = require('../integrations/gmail');
-const { draftReplyPrompt, emailTriagePrompt } = require('../prompts/email');
+const { getRecentEmails } = require('../integrations/gmail');
+const { hasToken } = require('../integrations/calendar');
+const { draftReplyPrompt } = require('../prompts/email');
 
-const IMPORTANCE_THRESHOLD = 6;
+// Lowered from 6 — a plain direct email from a real person scores 6 now
+const IMPORTANCE_THRESHOLD = 5;
 
 function scoreEmail(email) {
-  let score = 3;
+  let score = 3; // base
   const subject = (email.subject || '').toLowerCase();
   const from = (email.from || '').toLowerCase();
+  const reasons = [];
 
-  // Spam/newsletter signals (lower score)
-  if (from.includes('noreply') || from.includes('no-reply') || from.includes('donotreply')) score -= 2;
-  if (email.labelIds?.includes('CATEGORY_PROMOTIONS')) score -= 3;
-  if (email.labelIds?.includes('CATEGORY_SOCIAL')) score -= 2;
-  if (email.labelIds?.includes('CATEGORY_UPDATES')) score -= 1;
+  // Automated/bulk sender signals (lower score)
+  const isAutomated =
+    from.includes('noreply') ||
+    from.includes('no-reply') ||
+    from.includes('donotreply') ||
+    from.includes('notifications@') ||
+    from.includes('mailer@') ||
+    from.includes('bounce');
+  if (isAutomated) {
+    score -= 2;
+    reasons.push('-2 automated sender');
+  }
+  if (email.labelIds?.includes('CATEGORY_PROMOTIONS')) { score -= 3; reasons.push('-3 promotions'); }
+  if (email.labelIds?.includes('CATEGORY_SOCIAL'))     { score -= 2; reasons.push('-2 social'); }
+  if (email.labelIds?.includes('CATEGORY_UPDATES'))    { score -= 1; reasons.push('-1 updates'); }
 
-  // Urgency keywords
-  const urgentWords = ['urgent', 'deadline', 'important', 'action required', 'asap', 'time-sensitive', 'overdue', 'final notice'];
-  if (urgentWords.some((w) => subject.includes(w))) score += 3;
+  // Real person signal
+  if (!isAutomated) { score += 1; reasons.push('+1 real person'); }
 
-  // Direct reply indicators
-  if (email.labelIds?.includes('INBOX') && !email.labelIds?.includes('CATEGORY_PROMOTIONS')) score += 2;
-  if (subject.startsWith('re:') || subject.startsWith('fwd:')) score += 1;
+  // Landed in INBOX proper (not a bulk category)
+  if (email.labelIds?.includes('INBOX') && !email.labelIds?.includes('CATEGORY_PROMOTIONS')) {
+    score += 2;
+    reasons.push('+2 in inbox');
+  }
 
-  // Educational / professor signals
-  if (from.includes('.edu') || from.includes('asu.edu') || from.includes('canvas')) score += 2;
+  // Thread participation
+  if (subject.startsWith('re:') || subject.startsWith('fwd:')) { score += 1; reasons.push('+1 thread reply'); }
 
-  return Math.min(10, Math.max(1, score));
+  // Urgency keywords in subject
+  const urgentWords = [
+    'urgent', 'asap', 'deadline', 'important', 'action required',
+    'time-sensitive', 'overdue', 'final notice', 'critical',
+    'respond', 'response needed', 'please reply', 'follow up',
+    'follow-up', 'reminder', 'expir',
+  ];
+  const matched = urgentWords.filter((w) => subject.includes(w));
+  if (matched.length) { score += 3; reasons.push(`+3 urgent keyword (${matched[0]})`); }
+
+  // Educational/institutional senders
+  if (from.includes('.edu') || from.includes('asu.edu')) { score += 2; reasons.push('+2 .edu sender'); }
+  if (from.includes('canvas')) { score += 1; reasons.push('+1 canvas'); }
+
+  const final = Math.min(10, Math.max(1, score));
+  return { score: final, reasons };
 }
 
 async function checkNewEmails(sendAlertFn) {
+  // 24-hour fallback so nothing slips through after a restart
   const lastCheck = state.getSetting('last_email_check');
-  const sinceTimestamp = lastCheck ? parseInt(lastCheck, 10) : Date.now() - 15 * 60 * 1000;
+  const sinceTimestamp = lastCheck
+    ? parseInt(lastCheck, 10)
+    : Date.now() - 24 * 60 * 60 * 1000;
   const now = Date.now();
 
-  let emails;
-  try {
-    emails = await getRecentEmailsAllAccounts(sinceTimestamp);
-  } catch (err) {
-    logger.error('[email-watcher] Failed to fetch emails:', err.message);
-    return;
+  logger.info(
+    `[email-watcher] Starting check — looking back to ${new Date(sinceTimestamp).toLocaleString('en-US', { timeZone: 'America/Phoenix' })}`
+  );
+
+  // Fetch each account separately so we can log clearly
+  const accounts = ['personal', 'asu'].filter(hasToken);
+  const allEmails = [];
+
+  for (const account of accounts) {
+    logger.info(`[email-watcher] Checking ${account} inbox...`);
+    try {
+      const emails = await getRecentEmails(sinceTimestamp, account);
+      logger.info(`[email-watcher] ${account}: fetched ${emails.length} email(s)`);
+      allEmails.push(...emails);
+    } catch (err) {
+      logger.error(`[email-watcher] ${account}: fetch failed — ${err.message}`);
+    }
   }
 
+  // Always update last-check timestamp regardless of results
   state.setSetting('last_email_check', String(now));
 
-  // Filter out already-seen emails
-  const newEmails = emails.filter((e) => !state.isEmailSeen(e.id));
-  if (!newEmails.length) {
-    logger.debug('[email-watcher] No new emails');
+  if (!allEmails.length) {
+    logger.info('[email-watcher] No emails found in any inbox');
     return;
   }
 
-  logger.info(`[email-watcher] Processing ${newEmails.length} new emails`);
-
-  // Score emails — use Claude for richer triage if we have many
-  let scoredEmails;
-  try {
-    if (newEmails.length <= 3) {
-      scoredEmails = newEmails.map((e) => ({ ...e, score: scoreEmail(e), needsDraft: scoreEmail(e) >= IMPORTANCE_THRESHOLD }));
-    } else {
-      const triagePrompt = emailTriagePrompt(
-        newEmails.map((e) => ({ id: e.id, from: e.from, subject: e.subject, snippet: e.snippet }))
-      );
-      const raw = await claude.complete(triagePrompt, { system: 'You are an email triage assistant. Output only valid JSON.' });
-      const parsed = JSON.parse(raw);
-      scoredEmails = newEmails.map((e) => {
-        const triage = parsed.find((t) => t.id === e.id) || {};
-        return { ...e, score: triage.score || scoreEmail(e), summary: triage.summary, needsDraft: triage.needsDraft };
-      });
+  // Filter already-seen
+  const newEmails = allEmails.filter((e) => {
+    if (state.isEmailSeen(e.id)) {
+      logger.debug(`[email-watcher] Skip (already seen): "${e.subject}" from ${e.from}`);
+      return false;
     }
-  } catch (err) {
-    logger.error('[email-watcher] Triage failed, using simple scoring:', err.message);
-    scoredEmails = newEmails.map((e) => ({ ...e, score: scoreEmail(e), needsDraft: scoreEmail(e) >= IMPORTANCE_THRESHOLD }));
-  }
+    return true;
+  });
 
-  // Mark all as seen
+  logger.info(`[email-watcher] ${newEmails.length} unseen email(s) to score (${allEmails.length - newEmails.length} already seen)`);
+
+  if (!newEmails.length) return;
+
+  // Score and log every email
+  const scoredEmails = newEmails.map((e) => {
+    const { score, reasons } = scoreEmail(e);
+    const action = score >= IMPORTANCE_THRESHOLD ? 'ALERT' : 'skip';
+    logger.info(
+      `[email-watcher] [${action}] score=${score} "${e.subject}" from ${e.from} (${e.account}) | ${reasons.join(', ')}`
+    );
+    return { ...e, score, needsDraft: score >= IMPORTANCE_THRESHOLD };
+  });
+
+  // Mark all as seen before alerting (prevents duplicate alerts on retry)
   newEmails.forEach((e) => state.markEmailSeen(e.id));
 
-  // Alert and draft for important emails
   const importantEmails = scoredEmails.filter((e) => e.score >= IMPORTANCE_THRESHOLD);
+  logger.info(
+    `[email-watcher] ${importantEmails.length}/${scoredEmails.length} email(s) exceeded threshold (${IMPORTANCE_THRESHOLD})`
+  );
+
   for (const email of importantEmails) {
     try {
+      logger.info(`[email-watcher] Sending alert for: "${email.subject}"`);
       await processImportantEmail(email, sendAlertFn);
     } catch (err) {
       logger.error(`[email-watcher] Failed to process email ${email.id}:`, err.message);
@@ -94,26 +140,30 @@ async function checkNewEmails(sendAlertFn) {
 
 async function processImportantEmail(email, sendAlertFn) {
   const chatId = config.telegram.myChatId;
-  const summary = email.summary || email.snippet || '(no preview)';
-
+  const preview = email.snippet || '(no preview)';
   const accountTag = email.account === 'asu' ? ' (ASU)' : ' (Personal)';
-  const alert = `📧 *New email${accountTag} from ${email.from}*\n*Subject:* ${email.subject}\n\n${summary}`;
+
+  const alert =
+    `📧 *New email${accountTag}*\n` +
+    `*From:* ${email.from}\n` +
+    `*Subject:* ${email.subject}\n\n` +
+    preview;
   await sendAlertFn(alert);
 
   if (!email.needsDraft) return;
 
-  // Fetch full body for drafting if we only have a snippet
+  // Get full body for drafting
   let fullEmail = email;
   if (!email.body || email.body.length < 100) {
     try {
+      const { getEmailContent } = require('../integrations/gmail');
       fullEmail = await getEmailContent(email.id, email.account || 'personal');
     } catch {
       fullEmail = email;
     }
   }
 
-  const draftPrompt = draftReplyPrompt({ originalEmail: fullEmail });
-  const draftText = await claude.complete(draftPrompt);
+  const draftText = await claude.complete(draftReplyPrompt({ originalEmail: fullEmail }));
 
   const draftId = state.saveDraft({
     chatId,
@@ -127,8 +177,9 @@ async function processImportantEmail(email, sendAlertFn) {
 
   const draftMsg =
     `*Draft reply (ID: ${draftId}):*\n\n${draftText}\n\n` +
-    `Reply with:\n• *approve* — send this reply\n• *edit: [your changes]* — rewrite it\n• *discard* — skip this one`;
+    `Reply with:\n• *approve* — send this reply\n• *edit: [changes]* — rewrite it\n• *discard* — skip`;
   await sendAlertFn(draftMsg);
+  logger.info(`[email-watcher] Draft ${draftId} created for: "${email.subject}"`);
 }
 
 module.exports = { checkNewEmails };
