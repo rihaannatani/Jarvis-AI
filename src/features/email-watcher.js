@@ -9,104 +9,80 @@ const { draftReplyPrompt } = require('../prompts/email');
 
 const IMPORTANCE_THRESHOLD = 7;
 
-// Domains that are always noise — cap score at 3 regardless of other signals.
-// Exceptions are checked inline (e.g. PayPal fraud alerts).
+// Domains that are always noise — skip Claude scoring entirely
 const NOISE_DOMAINS = [
   'nextdoor.com', 'ubereats.com', 'uber.com', 'devpost.com',
   'rocketmoney.com', 'everydaydose.com', 'openweathermap.org',
 ];
 
-// edstem.org is noise unless the score would reach 8+ on its own merit
-const EDSTEM_NOISE_THRESHOLD = 8;
+// Automated sender patterns — skip Claude scoring
+const AUTOMATED_PATTERNS = [
+  'noreply', 'no-reply', 'donotreply', 'notifications@', 'mailer@', 'bounce',
+];
 
-function scoreEmail(email) {
-  let score = 3; // base
-  const subject = (email.subject || '').toLowerCase();
+function fromAddress(email) {
+  // "Display Name <addr@domain.com>" → "addr@domain.com", or raw string
+  const m = (email.from || '').match(/<([^>]+)>/);
+  return (m ? m[1] : email.from || '').toLowerCase().trim();
+}
+
+function isMySelf(email) {
+  const from = fromAddress(email);
+  return config.myEmails.some((mine) => from.includes(mine));
+}
+
+function isNoiseSender(email) {
   const from = (email.from || '').toLowerCase();
-  const reasons = [];
+  if (NOISE_DOMAINS.some((d) => from.includes(d))) return true;
+  if (AUTOMATED_PATTERNS.some((p) => from.includes(p))) return true;
+  if (email.labelIds?.includes('CATEGORY_PROMOTIONS')) return true;
+  return false;
+}
 
-  // ── Hard caps: known noise domains ──────────────────────────────────────────
-  const isPayPal = from.includes('paypal.com');
-  const isEdstem = from.includes('edstem.org');
-  const isNoiseDomain = NOISE_DOMAINS.some((d) => from.includes(d));
+function isCcOnly(email) {
+  if (!email.cc) return false;
+  const to = (email.to || '').toLowerCase();
+  const cc = (email.cc || '').toLowerCase();
+  // If none of my addresses appear in To but at least one appears in Cc
+  const inTo = config.myEmails.some((mine) => to.includes(mine));
+  const inCc = config.myEmails.some((mine) => cc.includes(mine));
+  return !inTo && inCc;
+}
 
-  if (isNoiseDomain) {
-    reasons.push('cap=3 noise domain');
-    return { score: 3, reasons };
+async function scoreEmailWithClaude(email) {
+  const memories = state.getActiveMemories();
+  const ccOnly = isCcOnly(email);
+
+  const prompt =
+    `You are scoring an email for importance to Rihaan Natani, a CS student at ASU.\n` +
+    (memories ? `Here is what you know about him:${memories}\n\n` : '') +
+    `Email details:\n` +
+    `From: ${email.from}\n` +
+    `To: ${email.to || '(unknown)'}\n` +
+    `CC: ${email.cc || '(none)'}\n` +
+    `Subject: ${email.subject}\n` +
+    `Preview: ${email.snippet || '(none)'}\n\n` +
+    `Score this email 1-10 for how important it is for Rihaan to be immediately notified about. Consider:\n` +
+    `- Is this directly addressed to him (not just CC'd)? ${ccOnly ? '(Note: Rihaan is only CC\'d on this email)' : ''}\n` +
+    `- Is it from someone he knows or an institution he\'s part of (ASU, professors)?\n` +
+    `- Does it require action or a response?\n` +
+    `- Is it time sensitive?\n` +
+    `- Is it a newsletter, automated notification, or marketing? (score low)\n` +
+    `- Does it relate to anything in his current context (assignments, jobs, people)?\n\n` +
+    `Reply with ONLY a JSON object: {"score": 8, "reason": "Professor emailing directly about assignment"}`;
+
+  try {
+    const raw = await claude.complete(prompt, { maxTokens: 150 });
+    // Extract JSON from response (model may wrap it in markdown)
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON found in response');
+    const parsed = JSON.parse(match[0]);
+    const score = Math.min(10, Math.max(1, Number(parsed.score) || 1));
+    return { score, reason: parsed.reason || '' };
+  } catch (err) {
+    logger.warn(`[email-watcher] Claude scoring failed for "${email.subject}":`, err.message);
+    return null;
   }
-
-  if (isPayPal) {
-    const isSuspicious = subject.includes('unauthorized') || subject.includes('suspicious');
-    if (!isSuspicious) {
-      reasons.push('cap=3 paypal non-alert');
-      return { score: 3, reasons };
-    }
-  }
-
-  // ── Automated/bulk sender signals ────────────────────────────────────────────
-  const isAutomated =
-    from.includes('noreply') ||
-    from.includes('no-reply') ||
-    from.includes('donotreply') ||
-    from.includes('notifications@') ||
-    from.includes('mailer@') ||
-    from.includes('bounce');
-  if (isAutomated) {
-    score -= 2;
-    reasons.push('-2 automated sender');
-  }
-  if (email.labelIds?.includes('CATEGORY_PROMOTIONS')) { score -= 3; reasons.push('-3 promotions'); }
-  if (email.labelIds?.includes('CATEGORY_SOCIAL'))     { score -= 2; reasons.push('-2 social'); }
-  if (email.labelIds?.includes('CATEGORY_UPDATES'))    { score -= 1; reasons.push('-1 updates'); }
-
-  // Real person signal
-  if (!isAutomated) { score += 1; reasons.push('+1 real person'); }
-
-  // Landed in INBOX proper (not a bulk category)
-  if (email.labelIds?.includes('INBOX') && !email.labelIds?.includes('CATEGORY_PROMOTIONS')) {
-    score += 2;
-    reasons.push('+2 in inbox');
-  }
-
-  // Thread participation
-  if (subject.startsWith('re:') || subject.startsWith('fwd:')) { score += 1; reasons.push('+1 thread reply'); }
-
-  // Urgency keywords in subject (+3)
-  const urgentWords = [
-    'urgent', 'asap', 'deadline', 'important', 'action required',
-    'time-sensitive', 'time sensitive', 'overdue', 'final notice', 'critical',
-    'respond', 'response needed', 'please reply', 'follow up',
-    'follow-up', 'reminder', 'expir',
-  ];
-  const matched = urgentWords.filter((w) => subject.includes(w));
-  if (matched.length) { score += 3; reasons.push(`+3 urgent keyword (${matched[0]})`); }
-
-  // Known important sender domains (+2)
-  const importantDomains = ['asu.edu', 'gmail.com', 'instructure.com'];
-  const matchedDomain = importantDomains.find((d) => from.includes(d));
-  if (matchedDomain) {
-    // instructure.com (Canvas) only boosted for grade-related subjects
-    if (matchedDomain === 'instructure.com') {
-      const gradeWords = ['grade', 'graded', 'feedback', 'score', 'submission'];
-      if (gradeWords.some((w) => subject.includes(w))) {
-        score += 2;
-        reasons.push('+2 canvas grade notification');
-      }
-    } else {
-      score += 2;
-      reasons.push(`+2 important domain (${matchedDomain})`);
-    }
-  }
-
-  const final = Math.min(10, Math.max(1, score));
-
-  // edstem.org: only let through if score would be 8+
-  if (isEdstem && final < EDSTEM_NOISE_THRESHOLD) {
-    reasons.push(`cap=3 edstem below threshold (score was ${final})`);
-    return { score: 3, reasons };
-  }
-
-  return { score: final, reasons };
 }
 
 async function checkNewEmails(sendAlertFn) {
@@ -141,7 +117,6 @@ async function checkNewEmails(sendAlertFn) {
     }
   }
 
-  // Always update last-check timestamp regardless of results
   state.setSetting('last_email_check', String(now));
 
   if (!allEmails.length) {
@@ -158,26 +133,53 @@ async function checkNewEmails(sendAlertFn) {
     return true;
   });
 
-  logger.info(`[email-watcher] ${newEmails.length} unseen email(s) to score (${allEmails.length - newEmails.length} already seen)`);
+  logger.info(`[email-watcher] ${newEmails.length} unseen email(s) to process (${allEmails.length - newEmails.length} already seen)`);
 
   if (!newEmails.length) return;
 
-  // Score and log every email
-  const scoredEmails = newEmails.map((e) => {
-    const { score, reasons } = scoreEmail(e);
+  // Pre-filter: skip emails I sent and obvious noise before calling Claude
+  const toScore = [];
+  for (const email of newEmails) {
+    if (isMySelf(email)) {
+      logger.info(`[email-watcher] Skip (self): "${email.subject}"`);
+      state.markEmailSeen(email.id);
+      continue;
+    }
+    if (isNoiseSender(email)) {
+      logger.info(`[email-watcher] Skip (noise): "${email.subject}" from ${email.from}`);
+      state.markEmailSeen(email.id);
+      continue;
+    }
+    toScore.push(email);
+  }
+
+  logger.info(`[email-watcher] ${toScore.length}/${newEmails.length} email(s) passed pre-filter — sending to Claude`);
+
+  if (!toScore.length) return;
+
+  // Score surviving emails with Claude (sequentially to avoid rate limits)
+  const importantEmails = [];
+  for (const email of toScore) {
+    const result = await scoreEmailWithClaude(email);
+    const ccOnly = isCcOnly(email);
+    const score = result?.score ?? 0;
+    const reason = result?.reason ?? 'scoring unavailable';
+    const ccTag = ccOnly ? ' [CC only]' : '';
     const action = score >= IMPORTANCE_THRESHOLD ? 'ALERT' : 'skip';
+
     logger.info(
-      `[email-watcher] [${action}] score=${score} "${e.subject}" from ${e.from} (${e.account}) | ${reasons.join(', ')}`
+      `[email-watcher] [${action}] score=${score}${ccTag} "${email.subject}" from ${email.from} (${email.account}) | ${reason}`
     );
-    return { ...e, score, needsDraft: score >= IMPORTANCE_THRESHOLD };
-  });
 
-  // Mark all as seen before alerting (prevents duplicate alerts on retry)
-  newEmails.forEach((e) => state.markEmailSeen(e.id));
+    state.markEmailSeen(email.id);
 
-  const importantEmails = scoredEmails.filter((e) => e.score >= IMPORTANCE_THRESHOLD);
+    if (score >= IMPORTANCE_THRESHOLD) {
+      importantEmails.push({ ...email, score, reason, needsDraft: true });
+    }
+  }
+
   logger.info(
-    `[email-watcher] ${importantEmails.length}/${scoredEmails.length} email(s) exceeded threshold (${IMPORTANCE_THRESHOLD})`
+    `[email-watcher] ${importantEmails.length}/${toScore.length} email(s) exceeded threshold (${IMPORTANCE_THRESHOLD})`
   );
 
   for (const email of importantEmails) {
@@ -194,11 +196,13 @@ async function processImportantEmail(email, sendAlertFn) {
   const chatId = config.telegram.myChatId;
   const preview = email.snippet || '(no preview)';
   const accountTag = email.account === 'asu' ? ' (ASU)' : ' (Personal)';
+  const ccTag = isCcOnly(email) ? ' · CC' : '';
 
   const alert =
-    `📧 *New email${accountTag}*\n` +
+    `📧 *New email${accountTag}${ccTag}*\n` +
     `*From:* ${email.from}\n` +
-    `*Subject:* ${email.subject}\n\n` +
+    `*Subject:* ${email.subject}\n` +
+    `_${email.reason}_\n\n` +
     preview;
   await sendAlertFn(alert);
 

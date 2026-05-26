@@ -45,6 +45,10 @@ const config = {
     apiKey: process.env.GOOGLE_MAPS_API_KEY || '',
     homeAddress: process.env.HOME_ADDRESS || '1260 E University Dr, Tempe, AZ 85281',
   },
+  myEmails: [
+    process.env.PERSONAL_EMAIL || '',
+    'rnatani1@asu.edu',
+  ].filter(Boolean).map((e) => e.toLowerCase()),
   app: {
     nodeEnv: process.env.NODE_ENV || 'development',
     port: parseInt(process.env.PORT || '3000', 10),

@@ -58,6 +58,7 @@ async function getRecentEmails(sinceTimestamp, account = 'personal') {
             threadId: msg.data.threadId,
             from: getHeader(headers, 'From'),
             to: getHeader(headers, 'To'),
+            cc: getHeader(headers, 'Cc'),
             subject: getHeader(headers, 'Subject'),
             date: getHeader(headers, 'Date'),
             snippet: msg.data.snippet,
