@@ -91,6 +91,28 @@ db.exec(`
   );
 `);
 
+// Maps travel-time cache (30-min TTL)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS maps_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cache_key TEXT UNIQUE NOT NULL,
+    result TEXT NOT NULL,
+    cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+// API usage log for cost tracking
+db.exec(`
+  CREATE TABLE IF NOT EXISTS api_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purpose TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    logged_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 // Migrations for existing DBs
 try { db.exec(`ALTER TABLE pending_drafts ADD COLUMN account TEXT DEFAULT 'personal'`); } catch { /* already exists */ }
 
@@ -283,6 +305,45 @@ function getActiveMemories() {
   return `\n\n## What I remember about you:\n${sections.join('\n\n')}`;
 }
 
+// ─── Maps cache helpers ───────────────────────────────────────────────────────
+
+const MAPS_CACHE_TTL_MIN = 30;
+
+function getMapsCache(key) {
+  const row = db.prepare(
+    `SELECT result FROM maps_cache
+     WHERE cache_key = ?
+       AND cached_at >= datetime('now', '-${MAPS_CACHE_TTL_MIN} minutes')`
+  ).get(key);
+  return row ? JSON.parse(row.result) : null;
+}
+
+function setMapsCache(key, result) {
+  db.prepare(
+    `INSERT OR REPLACE INTO maps_cache (cache_key, result, cached_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP)`
+  ).run(key, JSON.stringify(result));
+}
+
+// ─── API usage helpers ────────────────────────────────────────────────────────
+
+function logApiUsage(purpose, model, inputTokens, outputTokens) {
+  db.prepare(
+    `INSERT INTO api_usage (purpose, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?)`
+  ).run(purpose, model, inputTokens, outputTokens);
+}
+
+function getApiUsageToday() {
+  return db.prepare(
+    `SELECT
+       SUM(input_tokens)  AS input_tokens,
+       SUM(output_tokens) AS output_tokens,
+       COUNT(*)           AS calls
+     FROM api_usage
+     WHERE logged_at >= date('now')`
+  ).get();
+}
+
 module.exports = {
   db,
   getMessages,
@@ -310,4 +371,8 @@ module.exports = {
   markAssignmentSeen,
   updateAssignmentDueAt,
   countSeenAssignments,
+  getMapsCache,
+  setMapsCache,
+  logApiUsage,
+  getApiUsageToday,
 };

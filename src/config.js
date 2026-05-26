@@ -22,7 +22,8 @@ const config = {
   },
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY,
-    model: 'claude-sonnet-4-6',
+    model: process.env.MODEL_SMART || 'claude-sonnet-4-6',
+    modelFast: process.env.MODEL_FAST || 'claude-haiku-4-5-20251001',
   },
   google: {
     credentialsPath: process.env.GOOGLE_CREDENTIALS_PATH || './credentials.json',

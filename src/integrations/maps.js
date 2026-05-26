@@ -2,6 +2,7 @@
 const axios = require('axios');
 const config = require('../config');
 const logger = require('../logger');
+const state = require('../state');
 
 const BASE = 'https://maps.googleapis.com/maps/api';
 
@@ -62,6 +63,14 @@ async function getTravelTime(destination, origin, mode = 'driving') {
   try {
     const resolvedDest = await resolveLocation(destination);
     const resolvedOrigin = await resolveLocation(origin) || homeAddress();
+
+    const cacheKey = `travel:${resolvedOrigin}|${resolvedDest}|${mode}`;
+    const cached = state.getMapsCache(cacheKey);
+    if (cached) {
+      logger.debug(`[maps] Cache hit: ${cacheKey}`);
+      return cached;
+    }
+
     const params = {
       origins: resolvedOrigin,
       destinations: resolvedDest,
@@ -82,7 +91,7 @@ async function getTravelTime(destination, origin, mode = 'driving') {
       throw new Error(`Distance Matrix returned status: ${el?.status || 'no result'}`);
     }
 
-    return {
+    const result = {
       duration: el.duration?.text || 'unknown',
       durationInTraffic: el.duration_in_traffic?.text || el.duration?.text || 'unknown',
       durationInTrafficSeconds: el.duration_in_traffic?.value || el.duration?.value || 0,
@@ -91,6 +100,8 @@ async function getTravelTime(destination, origin, mode = 'driving') {
       origin: resolvedOrigin,
       destination: resolvedDest,
     };
+    state.setMapsCache(cacheKey, result);
+    return result;
   } catch (err) {
     logger.error('[maps] getTravelTime failed:', err.message);
     throw err;
@@ -130,6 +141,14 @@ async function getDirections(destination, origin, mode = 'driving') {
   try {
     const resolvedDest = await resolveLocation(destination);
     const resolvedOrigin = await resolveLocation(origin) || homeAddress();
+
+    const cacheKey = `directions:${resolvedOrigin}|${resolvedDest}|${mode}`;
+    const cached = state.getMapsCache(cacheKey);
+    if (cached) {
+      logger.debug(`[maps] Cache hit: ${cacheKey}`);
+      return cached;
+    }
+
     const params = {
       origin: resolvedOrigin,
       destination: resolvedDest,
@@ -154,7 +173,7 @@ async function getDirections(destination, origin, mode = 'driving') {
     const originEnc = encodeURIComponent(resolvedOrigin);
     const destEnc = encodeURIComponent(resolvedDest);
 
-    return {
+    const result = {
       summary: route.summary,
       duration: leg.duration?.text || 'unknown',
       durationInTraffic: leg.duration_in_traffic?.text || leg.duration?.text || 'unknown',
@@ -163,6 +182,8 @@ async function getDirections(destination, origin, mode = 'driving') {
       steps,
       googleMapsUrl: `https://www.google.com/maps/dir/${originEnc}/${destEnc}`,
     };
+    state.setMapsCache(cacheKey, result);
+    return result;
   } catch (err) {
     logger.error('[maps] getDirections failed:', err.message);
     throw err;

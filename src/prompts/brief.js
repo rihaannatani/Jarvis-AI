@@ -28,7 +28,11 @@ WRITING INSTRUCTIONS:
 }
 
 function nightBriefPrompt(data) {
-  const { calendar, canvasAssignments, pendingDrafts, tomorrowCalendar, date } = data;
+  const { calendar, canvasAssignments, pendingDrafts, tomorrowCalendar, date, apiUsage } = data;
+
+  const usageStr = apiUsage
+    ? `API USAGE TODAY: ${apiUsage.calls} calls, ${apiUsage.inputTokens} input tokens, ${apiUsage.outputTokens} output tokens (~$${apiUsage.estimatedCost})`
+    : '';
 
   return `Write a night brief for the evening of ${date}. Tone should be calm and winding-down — like a good assistant helping wrap up the day and set up for tomorrow.
 
@@ -41,12 +45,15 @@ ${pendingDrafts && pendingDrafts.length ? `PENDING EMAIL DRAFTS (awaiting approv
 
 ${tomorrowCalendar ? `TOMORROW'S CALENDAR:\n${JSON.stringify(tomorrowCalendar, null, 2)}` : 'TOMORROW: unavailable'}
 
+${usageStr}
+
 WRITING INSTRUCTIONS:
 - Brief, warm opening — acknowledge it's evening
 - Recap today's key events (1-2 sentences, not a full rundown)
 - Flag anything due tomorrow clearly — last reminder tone
 - If there are pending email drafts, mention them simply
 - Preview tomorrow: what's coming up
+- If API usage data is present, add one line at the end: "API today: X calls, ~$Y"
 - Close gently — no cheerleading, just practical and calm
 - Aim for 150-250 words, shorter than the morning brief`;
 }

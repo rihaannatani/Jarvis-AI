@@ -7,6 +7,22 @@ const { buildSystemPrompt } = require('./prompts/system');
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
+const MODEL_SMART = config.anthropic.model;       // sonnet — conversation, briefs, drafts
+const MODEL_FAST  = config.anthropic.modelFast;   // haiku  — scoring, simple formatting
+
+// Sonnet pricing (per 1K tokens)
+const COST_PER_1K = {
+  input:  0.003,
+  output: 0.015,
+};
+
+function logUsage(purpose, model, usage) {
+  const { input_tokens: i, output_tokens: o } = usage;
+  const cost = ((i / 1000) * COST_PER_1K.input + (o / 1000) * COST_PER_1K.output).toFixed(4);
+  logger.info(`[claude] ${purpose} — input: ${i}, output: ${o}, ~$${cost} (${model.split('-').slice(-2).join('-')})`);
+  state.logApiUsage(purpose, model, i, o);
+}
+
 // Tool definitions that Claude can call to fetch live data
 const TOOLS = [
   {
@@ -46,10 +62,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         message: { type: 'string', description: 'The reminder message to send' },
-        fire_at: {
-          type: 'string',
-          description: 'ISO 8601 datetime string (America/Phoenix timezone)',
-        },
+        fire_at: { type: 'string', description: 'ISO 8601 datetime string (America/Phoenix timezone)' },
       },
       required: ['message', 'fire_at'],
     },
@@ -61,8 +74,8 @@ const TOOLS = [
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'Event title' },
-        start: { type: 'string', description: "ISO 8601 datetime e.g. 2026-05-25T18:00:00 in America/Phoenix" },
-        end: { type: 'string', description: "ISO 8601 datetime e.g. 2026-05-25T20:00:00 in America/Phoenix" },
+        start: { type: 'string', description: 'ISO 8601 datetime e.g. 2026-05-25T18:00:00 in America/Phoenix' },
+        end: { type: 'string', description: 'ISO 8601 datetime e.g. 2026-05-25T20:00:00 in America/Phoenix' },
         description: { type: 'string', description: 'Optional notes or event description' },
         account: {
           type: 'string',
@@ -95,7 +108,7 @@ const TOOLS = [
           enum: ['task', 'fact', 'preference', 'reminder', 'context'],
           description: 'task = something to do, fact = personal info, preference = how they like things, reminder = time-sensitive, context = general background',
         },
-        source: { type: 'string', enum: ['user', 'auto'], description: "user = explicitly asked, auto = extracted from conversation" },
+        source: { type: 'string', enum: ['user', 'auto'], description: 'user = explicitly asked, auto = extracted from conversation' },
       },
       required: ['content', 'category'],
     },
@@ -123,7 +136,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         event_id: { type: 'string', description: 'The Google Calendar event ID' },
-        account: { type: 'string', enum: ['personal', 'asu'], description: "Which calendar the event is on" },
+        account: { type: 'string', enum: ['personal', 'asu'], description: 'Which calendar the event is on' },
       },
       required: ['event_id'],
     },
@@ -136,7 +149,7 @@ const TOOLS = [
       properties: {
         event_id: { type: 'string', description: 'The Google Calendar event ID' },
         attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses to add as guests' },
-        account: { type: 'string', enum: ['personal', 'asu'], description: "Which calendar the event is on" },
+        account: { type: 'string', enum: ['personal', 'asu'], description: 'Which calendar the event is on' },
       },
       required: ['event_id', 'attendees'],
     },
@@ -181,8 +194,57 @@ const TOOLS = [
   },
 ];
 
+// Keywords mapping topics to memory categories/terms for relevance filtering
+const TOPIC_KEYWORDS = {
+  calendar: ['calendar', 'event', 'meeting', 'schedule', 'appointment', 'class', 'today', 'tomorrow', 'week'],
+  school:   ['assignment', 'homework', 'canvas', 'class', 'course', 'grade', 'exam', 'quiz', 'asu', 'professor', 'due'],
+  email:    ['email', 'gmail', 'message', 'reply', 'draft', 'inbox', 'sent'],
+  maps:     ['drive', 'travel', 'directions', 'traffic', 'restaurant', 'place', 'near', 'location', 'get to'],
+  weather:  ['weather', 'rain', 'temperature', 'forecast', 'hot', 'cold', 'sunny'],
+};
+
+function getRelevantMemories(userMessage) {
+  const all = state.listActiveMemories();
+  if (!all.length) return '';
+
+  const msg = userMessage.toLowerCase();
+
+  // Determine which topics the message touches
+  const activeTopics = Object.entries(TOPIC_KEYWORDS)
+    .filter(([, kw]) => kw.some((k) => msg.includes(k)))
+    .map(([topic]) => topic);
+
+  // If no specific topic detected, fall back to all memories (keeps task/fact always)
+  if (!activeTopics.length) return state.getActiveMemories();
+
+  // Always include tasks and facts; filter context/preference/reminder by relevance
+  const relevant = all.filter((m) => {
+    if (['task', 'fact'].includes(m.category)) return true;
+    const content = (m.content || '').toLowerCase();
+    return activeTopics.some((topic) =>
+      TOPIC_KEYWORDS[topic].some((kw) => content.includes(kw))
+    );
+  });
+
+  if (!relevant.length) return '';
+
+  const byCategory = {};
+  for (const m of relevant) {
+    const cat = m.category || 'context';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(m);
+  }
+
+  const LABELS = { task: 'Tasks', fact: 'Facts', preference: 'Preferences', reminder: 'Reminders', context: 'Context' };
+  const sections = Object.entries(byCategory).map(([cat, mems]) => {
+    const label = LABELS[cat] || cat;
+    return `*${label}:*\n${mems.map((m) => `- [#${m.id}] ${m.content}`).join('\n')}`;
+  });
+
+  return `\n\n## What I remember about you:\n${sections.join('\n\n')}`;
+}
+
 async function executeTool(toolName, toolInput, chatId) {
-  // Lazy-load integrations to avoid circular deps and keep startup fast
   const router = require('./router');
   try {
     return await router.execute(toolName, toolInput, chatId);
@@ -193,30 +255,31 @@ async function executeTool(toolName, toolInput, chatId) {
 }
 
 async function chat(chatId, userMessage) {
-  // Load conversation history from DB
-  const history = state.getMessages(chatId);
+  const history = state.getMessages(chatId);  // capped at MAX_MESSAGES in state.js
+  // Only use last 10 messages to cap context
+  const recentHistory = history.slice(-10);
   const messages = [
-    ...history.map((m) => ({ role: m.role, content: m.content })),
+    ...recentHistory.map((m) => ({ role: m.role, content: m.content })),
     { role: 'user', content: userMessage },
   ];
 
-  // Save user message
   state.saveMessage(chatId, 'user', userMessage);
 
-  const systemPrompt = buildSystemPrompt(state.getActiveMemories());
+  const relevantMemories = getRelevantMemories(userMessage);
+  const systemPrompt = buildSystemPrompt(relevantMemories);
   let currentMessages = [...messages];
 
-  // Agentic loop — Claude may call tools multiple times before final answer
   for (let i = 0; i < 10; i++) {
     const response = await anthropic.messages.create({
-      model: config.anthropic.model,
-      max_tokens: 4096,
+      model: MODEL_SMART,
+      max_tokens: 1024,
       system: systemPrompt,
       tools: TOOLS,
       messages: currentMessages,
     });
 
     logger.debug(`[claude] stop_reason: ${response.stop_reason}, turn: ${i + 1}`);
+    if (response.usage) logUsage('conversation', MODEL_SMART, response.usage);
 
     if (response.stop_reason === 'end_turn') {
       const textContent = response.content
@@ -231,28 +294,19 @@ async function chat(chatId, userMessage) {
 
     if (response.stop_reason === 'tool_use') {
       const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
-
-      // Add Claude's response (including tool_use blocks) to message history
       currentMessages.push({ role: 'assistant', content: response.content });
 
-      // Execute all tools (in parallel if multiple were called)
       const toolResults = await Promise.all(
         toolUseBlocks.map(async (block) => {
           const result = await executeTool(block.name, block.input, chatId);
-          return {
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: JSON.stringify(result),
-          };
+          return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
         })
       );
 
-      // Feed results back to Claude
       currentMessages.push({ role: 'user', content: toolResults });
       continue;
     }
 
-    // Unexpected stop reason
     logger.warn('[claude] Unexpected stop_reason:', response.stop_reason);
     break;
   }
@@ -262,14 +316,16 @@ async function chat(chatId, userMessage) {
   return fallback;
 }
 
-// One-shot call with no conversation memory (for briefs, emails, etc.)
-async function complete(prompt, { system, maxTokens = 4096 } = {}) {
+// Full-context Sonnet call — briefs, email drafts, complex reasoning
+async function complete(prompt, { system, maxTokens = 1024, purpose = 'complete' } = {}) {
   const response = await anthropic.messages.create({
-    model: config.anthropic.model,
+    model: MODEL_SMART,
     max_tokens: maxTokens,
-    system: system || buildSystemPrompt(),
+    ...(system ? { system } : {}),
     messages: [{ role: 'user', content: prompt }],
   });
+
+  if (response.usage) logUsage(purpose, MODEL_SMART, response.usage);
 
   return response.content
     .filter((b) => b.type === 'text')
@@ -278,4 +334,21 @@ async function complete(prompt, { system, maxTokens = 4096 } = {}) {
     .trim();
 }
 
-module.exports = { chat, complete };
+// Cheap Haiku call — scoring, formatting, single-fact lookups
+async function quickComplete(prompt, { maxTokens = 256, purpose = 'quick' } = {}) {
+  const response = await anthropic.messages.create({
+    model: MODEL_FAST,
+    max_tokens: maxTokens,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  if (response.usage) logUsage(purpose, MODEL_FAST, response.usage);
+
+  return response.content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
+module.exports = { chat, complete, quickComplete };

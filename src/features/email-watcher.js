@@ -1,6 +1,6 @@
 'use strict';
 const logger = require('../logger');
-const claude = require('../claude');
+const { complete, quickComplete } = require('../claude');
 const state = require('../state');
 const config = require('../config');
 const { getRecentEmails } = require('../integrations/gmail');
@@ -72,8 +72,7 @@ async function scoreEmailWithClaude(email) {
     `Reply with ONLY a JSON object: {"score": 8, "reason": "Professor emailing directly about assignment"}`;
 
   try {
-    const raw = await claude.complete(prompt, { maxTokens: 150 });
-    // Extract JSON from response (model may wrap it in markdown)
+    const raw = await quickComplete(prompt, { maxTokens: 150, purpose: 'email-scoring' });
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('No JSON found in response');
     const parsed = JSON.parse(match[0]);
@@ -219,7 +218,7 @@ async function processImportantEmail(email, sendAlertFn) {
     }
   }
 
-  const draftText = await claude.complete(draftReplyPrompt({ originalEmail: fullEmail }));
+  const draftText = await complete(draftReplyPrompt({ originalEmail: fullEmail }), { maxTokens: 600, purpose: 'email-draft' });
 
   const draftId = state.saveDraft({
     chatId,
