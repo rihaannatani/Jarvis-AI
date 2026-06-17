@@ -2,6 +2,7 @@
 const logger = require('../logger');
 const { complete } = require('../claude');
 const config = require('../config');
+const state = require('../state');
 const { morningBriefPrompt } = require('../prompts/brief');
 
 async function enrichEventsWithTravel(events) {
@@ -58,6 +59,34 @@ function prefilterForBrief(data) {
   return { weather, calendar: calendarClean, assignments: assignmentsDue, announcements, gmail: gmailClean };
 }
 
+function buildExpiringSoonSection() {
+  try {
+    const items = state.getExpiringPantryItems(3);
+    if (!items.length) return null;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const lines = ['🥗 *Use soon:*'];
+    for (const item of items) {
+      const expiry = new Date(item.expiry_date + 'T00:00:00');
+      const days = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
+      const loc = item.storage_location || 'unknown';
+      if (days <= 0) {
+        lines.push(`- ${item.name} — *expires today* (${loc})`);
+      } else if (days === 1) {
+        lines.push(`- ${item.name} — *expires tomorrow* (${loc})`);
+      } else {
+        lines.push(`- ${item.name} — expires in ${days} days (${loc})`);
+      }
+    }
+    return lines.join('\n');
+  } catch (err) {
+    logger.warn('[morning-brief] Could not load expiring items:', err.message);
+    return null;
+  }
+}
+
 async function assembleMorningBrief() {
   const date = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -98,8 +127,13 @@ async function assembleMorningBrief() {
   });
 
   const filtered = prefilterForBrief(raw);
-  const prompt = morningBriefPrompt({ ...filtered, date });
-  return complete(prompt, { maxTokens: 600, purpose: 'morning-brief' });
+  const expiringSection = buildExpiringSoonSection();
+  const brief = await complete(morningBriefPrompt({ ...filtered, date }), { maxTokens: 600, purpose: 'morning-brief' });
+
+  if (expiringSection) {
+    return brief + '\n\n' + expiringSection;
+  }
+  return brief;
 }
 
 module.exports = { assembleMorningBrief };

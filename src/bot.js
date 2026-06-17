@@ -1,5 +1,6 @@
 'use strict';
 const TelegramBot = require('node-telegram-bot-api');
+const axios = require('axios');
 const config = require('./config');
 const logger = require('./logger');
 const claude = require('./claude');
@@ -7,6 +8,7 @@ const { handleDraftAction } = require('./features/draft-flow');
 const scheduler = require('./scheduler');
 const state = require('./state');
 const { handleApply, runWorkdayWatcher } = require('./features/workday-watcher');
+const { processReceiptImage } = require('./features/receipt-scanner');
 
 const MY_CHAT_ID = config.telegram.myChatId;
 
@@ -135,6 +137,30 @@ function init() {
     } catch (err) {
       logger.error('[bot] Message handling error:', err);
       await sendSafe(bot, chatId, "I hit a snag. Give it another shot.");
+    }
+  });
+
+  // ── Photo handler — receipt scanning ──────────────────────────────────────
+  bot.on('photo', async (msg) => {
+    const chatId = String(msg.chat.id);
+    if (!isAuthorized(chatId)) return;
+
+    bot.sendChatAction(chatId, 'typing').catch(() => {});
+
+    try {
+      const photo = msg.photo[msg.photo.length - 1];
+      const file = await bot.getFile(photo.file_id);
+      const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+      const dlResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+      const base64Image = Buffer.from(dlResponse.data).toString('base64');
+      const caption = msg.caption || '';
+
+      await sendSafe(bot, chatId, '🔍 Scanning receipt...');
+      const { summary } = await processReceiptImage(base64Image, caption);
+      await sendSafe(bot, chatId, summary);
+    } catch (err) {
+      logger.error('[bot] Photo handler error:', err.message);
+      await sendSafe(bot, chatId, "Couldn't scan that image. Make sure it's a clear photo of a receipt and try again.");
     }
   });
 

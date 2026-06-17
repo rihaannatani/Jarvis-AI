@@ -114,6 +114,19 @@ function init() {
   }, { timezone: TZ });
   jobCount++;
 
+  // Expiry checker — 8:00 AM Phoenix time daily
+  cron.schedule('0 8 * * *', async () => {
+    logger.info('[scheduler] Running expiry checker');
+    try {
+      const { checkExpiries, setSendAlert } = require('./features/expiry-checker');
+      setSendAlert((text) => safeSend(chatId, text));
+      await checkExpiries();
+    } catch (err) {
+      logger.error('[scheduler] Expiry checker failed:', err.message);
+    }
+  }, { timezone: TZ });
+  jobCount++;
+
   // Workday job watcher — every 2 hours
   cron.schedule('0 */2 * * *', async () => {
     logger.info('[scheduler] Running Workday job watcher');

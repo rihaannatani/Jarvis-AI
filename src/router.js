@@ -111,6 +111,68 @@ async function execute(toolName, toolInput, chatId) {
       return await getDirections(destination, origin, mode || 'driving');
     }
 
+    case 'get_pantry': {
+      const filter = toolInput.filter || 'all';
+      const items = state.getActivePantryItems();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      let filtered = items;
+      if (filter === 'expiring_soon') {
+        filtered = items.filter((i) => {
+          if (!i.expiry_date) return false;
+          const expiry = new Date(i.expiry_date + 'T00:00:00');
+          const days = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
+          return days <= 7;
+        });
+      } else if (filter === 'expired') {
+        filtered = items.filter((i) => {
+          if (!i.expiry_date) return false;
+          const expiry = new Date(i.expiry_date + 'T00:00:00');
+          return expiry < today;
+        });
+      } else if (filter === 'by_location') {
+        const byLoc = {};
+        for (const i of items) {
+          const loc = i.storage_location || 'unknown';
+          if (!byLoc[loc]) byLoc[loc] = [];
+          byLoc[loc].push(i);
+        }
+        return byLoc;
+      }
+
+      return filtered.map((i) => {
+        const days = i.expiry_date
+          ? Math.ceil((new Date(i.expiry_date + 'T00:00:00') - today) / (1000 * 60 * 60 * 24))
+          : null;
+        return { ...i, days_until_expiry: days };
+      });
+    }
+
+    case 'mark_consumed': {
+      const { item_name } = toolInput;
+      if (!item_name) return { error: 'item_name is required' };
+      const found = state.markPantryItemConsumed(item_name);
+      return found
+        ? { success: true, message: `Marked "${item_name}" as consumed` }
+        : { success: false, message: `No active pantry item matching "${item_name}" found` };
+    }
+
+    case 'add_pantry_item': {
+      const { name, expiry_date, storage_location, category, notes } = toolInput;
+      if (!name) return { error: 'name is required' };
+      const today = new Date().toISOString().slice(0, 10);
+      const id = state.addPantryItem({
+        name,
+        category: category || 'pantry',
+        purchase_date: today,
+        expiry_date: expiry_date || null,
+        storage_location: storage_location || null,
+        notes: notes || null,
+      });
+      return { success: true, id, name, expiry_date, storage_location };
+    }
+
     default:
       logger.warn(`[router] Unknown tool: ${toolName}`);
       return { error: `Unknown tool: ${toolName}` };

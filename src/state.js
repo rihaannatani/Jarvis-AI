@@ -126,6 +126,29 @@ db.exec(`
   );
 `);
 
+// Pantry / food expiry tracking
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pantry_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    category TEXT,
+    purchase_date TEXT,
+    expiry_date TEXT,
+    storage_location TEXT,
+    quantity TEXT,
+    notes TEXT,
+    consumed INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS expiry_alerts_sent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pantry_item_id INTEGER,
+    alert_type TEXT,
+    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 // Migrations for existing DBs
 try { db.exec(`ALTER TABLE pending_drafts ADD COLUMN account TEXT DEFAULT 'personal'`); } catch { /* already exists */ }
 
@@ -381,6 +404,58 @@ function getWorkdayStats() {
   ).get();
 }
 
+// ─── Pantry helpers ───────────────────────────────────────────────────────────
+
+function addPantryItem({ name, category, purchase_date, expiry_date, storage_location, quantity, notes }) {
+  const result = db.prepare(
+    `INSERT INTO pantry_items (name, category, purchase_date, expiry_date, storage_location, quantity, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(name, category || null, purchase_date || null, expiry_date || null, storage_location || null, quantity || null, notes || null);
+  return result.lastInsertRowid;
+}
+
+function getActivePantryItems() {
+  return db.prepare(
+    `SELECT * FROM pantry_items WHERE consumed = 0 ORDER BY expiry_date ASC NULLS LAST`
+  ).all();
+}
+
+function markPantryItemConsumed(itemName) {
+  const item = db.prepare(
+    `SELECT id FROM pantry_items WHERE consumed = 0 AND name LIKE ? LIMIT 1`
+  ).get(`%${itemName}%`);
+  if (!item) return false;
+  db.prepare(`UPDATE pantry_items SET consumed = 1 WHERE id = ?`).run(item.id);
+  return true;
+}
+
+function isExpiryAlertSent(pantryItemId, alertType) {
+  return !!db.prepare(
+    `SELECT 1 FROM expiry_alerts_sent WHERE pantry_item_id = ? AND alert_type = ?`
+  ).get(pantryItemId, alertType);
+}
+
+function markExpiryAlertSent(pantryItemId, alertType) {
+  db.prepare(
+    `INSERT INTO expiry_alerts_sent (pantry_item_id, alert_type) VALUES (?, ?)`
+  ).run(pantryItemId, alertType);
+}
+
+function getExpiringPantryItems(withinDays) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + withinDays);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  return db.prepare(
+    `SELECT * FROM pantry_items
+     WHERE consumed = 0
+       AND expiry_date IS NOT NULL
+       AND expiry_date >= ?
+       AND expiry_date <= ?
+     ORDER BY expiry_date ASC`
+  ).all(todayStr, cutoffStr);
+}
+
 module.exports = {
   db,
   getMessages,
@@ -416,4 +491,10 @@ module.exports = {
   markWorkdayJobSeen,
   markWorkdayJobApplied,
   getWorkdayStats,
+  addPantryItem,
+  getActivePantryItems,
+  markPantryItemConsumed,
+  isExpiryAlertSent,
+  markExpiryAlertSent,
+  getExpiringPantryItems,
 };

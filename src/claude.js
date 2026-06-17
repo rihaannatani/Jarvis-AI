@@ -192,6 +192,47 @@ const TOOLS = [
       required: ['destination'],
     },
   },
+  {
+    name: 'get_pantry',
+    description: "Get list of food items in the pantry/fridge, optionally filtered",
+    input_schema: {
+      type: 'object',
+      properties: {
+        filter: {
+          type: 'string',
+          enum: ['all', 'expiring_soon', 'expired', 'by_location'],
+          description: 'all = everything active, expiring_soon = within 7 days, expired = past expiry date, by_location = grouped by fridge/freezer/pantry/counter',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'mark_consumed',
+    description: 'Mark a pantry item as used up or thrown away',
+    input_schema: {
+      type: 'object',
+      properties: {
+        item_name: { type: 'string', description: 'Name of the pantry item (partial match is fine)' },
+      },
+      required: ['item_name'],
+    },
+  },
+  {
+    name: 'add_pantry_item',
+    description: 'Manually add a food item to the pantry without scanning a receipt',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Item name' },
+        expiry_date: { type: 'string', description: 'Expiry date as YYYY-MM-DD' },
+        storage_location: { type: 'string', enum: ['fridge', 'freezer', 'pantry', 'counter'], description: 'Where to store it' },
+        category: { type: 'string', description: 'produce/dairy/meat/seafood/frozen/pantry/snacks/drinks/bread/eggs' },
+        notes: { type: 'string', description: 'Optional storage tip or note' },
+      },
+      required: ['name'],
+    },
+  },
 ];
 
 // Keywords mapping topics to memory categories/terms for relevance filtering
@@ -201,6 +242,7 @@ const TOPIC_KEYWORDS = {
   email:    ['email', 'gmail', 'message', 'reply', 'draft', 'inbox', 'sent'],
   maps:     ['drive', 'travel', 'directions', 'traffic', 'restaurant', 'place', 'near', 'location', 'get to'],
   weather:  ['weather', 'rain', 'temperature', 'forecast', 'hot', 'cold', 'sunny'],
+  pantry:   ['pantry', 'fridge', 'freezer', 'food', 'groceries', 'receipt', 'expir', 'expired', 'milk', 'chicken', 'produce', 'consume', 'toss', 'ate', 'used up', 'pantry'],
 };
 
 function getRelevantMemories(userMessage) {
