@@ -113,6 +113,19 @@ db.exec(`
   );
 `);
 
+// Workday job watcher table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS seen_workday_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT UNIQUE NOT NULL,
+    title TEXT,
+    url TEXT,
+    applied INTEGER DEFAULT 0,
+    seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    applied_at DATETIME
+  );
+`);
+
 // Migrations for existing DBs
 try { db.exec(`ALTER TABLE pending_drafts ADD COLUMN account TEXT DEFAULT 'personal'`); } catch { /* already exists */ }
 
@@ -344,6 +357,30 @@ function getApiUsageToday() {
   ).get();
 }
 
+// ─── Workday job watcher helpers ──────────────────────────────────────────────
+
+function isWorkdayJobSeen(jobId) {
+  return !!db.prepare(`SELECT 1 FROM seen_workday_jobs WHERE job_id = ?`).get(jobId);
+}
+
+function markWorkdayJobSeen(jobId, title, url) {
+  db.prepare(
+    `INSERT OR IGNORE INTO seen_workday_jobs (job_id, title, url) VALUES (?, ?, ?)`
+  ).run(jobId, title || '', url || '');
+}
+
+function markWorkdayJobApplied(jobId) {
+  db.prepare(
+    `UPDATE seen_workday_jobs SET applied = 1, applied_at = CURRENT_TIMESTAMP WHERE job_id = ?`
+  ).run(jobId);
+}
+
+function getWorkdayStats() {
+  return db.prepare(
+    `SELECT COUNT(*) as total_seen, SUM(applied) as total_applied FROM seen_workday_jobs`
+  ).get();
+}
+
 module.exports = {
   db,
   getMessages,
@@ -375,4 +412,8 @@ module.exports = {
   setMapsCache,
   logApiUsage,
   getApiUsageToday,
+  isWorkdayJobSeen,
+  markWorkdayJobSeen,
+  markWorkdayJobApplied,
+  getWorkdayStats,
 };

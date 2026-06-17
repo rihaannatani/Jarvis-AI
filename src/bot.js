@@ -5,6 +5,8 @@ const logger = require('./logger');
 const claude = require('./claude');
 const { handleDraftAction } = require('./features/draft-flow');
 const scheduler = require('./scheduler');
+const state = require('./state');
+const { handleApply, runWorkdayWatcher } = require('./features/workday-watcher');
 
 const MY_CHAT_ID = config.telegram.myChatId;
 
@@ -51,6 +53,37 @@ function init() {
 
   scheduler.setBotInstance(bot);
 
+  // ── Inline button callback handler ────────────────────────────────────────
+  bot.on('callback_query', async (query) => {
+    const chatId = String(query.message.chat.id);
+    if (!isAuthorized(chatId)) return;
+
+    const data = query.data;
+    await bot.answerCallbackQuery(query.id);
+
+    const removeKeyboard = () =>
+      bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+      }).catch(() => {});
+
+    if (data === 'workday_apply_all') {
+      await removeKeyboard();
+      await handleApply('all', (t) => sendSafe(bot, chatId, t));
+
+    } else if (data === 'workday_pick') {
+      await removeKeyboard();
+      await sendSafe(bot, chatId,
+        'Reply with the job numbers you want, e.g.:\n`apply 1,3`\n\nor `apply all` for everything.'
+      );
+
+    } else if (data === 'workday_skip_all') {
+      await removeKeyboard();
+      await sendSafe(bot, chatId, "👍 Skipped. I'll check again in 2 hours.");
+      state.setSetting('workday_pending_jobs', '');
+    }
+  });
+
   bot.on('message', async (msg) => {
     const chatId = String(msg.chat.id);
     const text = msg.text?.trim();
@@ -72,6 +105,29 @@ function init() {
       // Check if this is a draft approval action first
       const handled = await handleDraftAction(chatId, text, (t) => sendSafe(bot, chatId, t));
       if (handled) return;
+
+      // ── Workday: apply command ────────────────────────────────────────────
+      if (/^apply\s+(all|\d[\d,\s]*)$/i.test(text)) {
+        const arg = text.replace(/^apply\s+/i, '').trim();
+        const indices = arg.toLowerCase() === 'all'
+          ? 'all'
+          : arg.split(',').map((n) => parseInt(n.trim()) - 1).filter((n) => !isNaN(n));
+        await handleApply(indices, (t) => sendSafe(bot, chatId, t));
+        return;
+      }
+
+      // ── Workday: manual scan trigger ──────────────────────────────────────
+      if (/^(scan jobs|check jobs|workday)$/i.test(text)) {
+        await sendSafe(bot, chatId, '🔍 Scanning ASU Workday for new jobs...');
+        await runWorkdayWatcher(
+          (t) => sendSafe(bot, chatId, t),
+          (t, buttons) => bot.sendMessage(chatId, t, {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: buttons },
+          })
+        );
+        return;
+      }
 
       // Otherwise route to Claude
       const response = await claude.chat(chatId, text);

@@ -114,6 +114,24 @@ function init() {
   }, { timezone: TZ });
   jobCount++;
 
+  // Workday job watcher — every 2 hours
+  cron.schedule('0 */2 * * *', async () => {
+    logger.info('[scheduler] Running Workday job watcher');
+    try {
+      const { runWorkdayWatcher } = require('./features/workday-watcher');
+      await runWorkdayWatcher(
+        (text) => safeSend(chatId, text),
+        (text, buttons) => bot.sendMessage(chatId, text, {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: buttons },
+        })
+      );
+    } catch (err) {
+      logger.error('[scheduler] Workday watcher failed:', err.message);
+    }
+  }, { timezone: TZ });
+  jobCount++;
+
   logger.info(`[scheduler] Initialized — ${jobCount} jobs active (timezone: ${TZ})`);
 
   // Seed Canvas watcher on startup (populates DB silently, no alerts)
