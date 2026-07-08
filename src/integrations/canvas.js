@@ -85,6 +85,9 @@ async function getAnnouncements() {
     const courses = await getCourses();
     const courseIds = courses.map((c) => `context_codes[]=course_${c.id}`).join('&');
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    // Canvas announcements don't include a course name field directly —
+    // resolve it from the course id embedded in html_url (courses/<id>/discussion_topics/...)
+    const courseNameById = new Map(courses.map((c) => [String(c.id), c.name]));
 
     const res = await withResilience('canvas', () =>
       client().get(`/announcements?${courseIds}`, {
@@ -92,14 +95,18 @@ async function getAnnouncements() {
       })
     );
 
-    return res.data.map((a) => ({
-      id: a.id,
-      title: a.title,
-      author: a.author?.display_name,
-      course: a.context_name,
-      postedAt: a.posted_at,
-      message: a.message?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300),
-    }));
+    return res.data.map((a) => {
+      const courseIdMatch = a.html_url?.match(/courses\/(\d+)/);
+      const course = (courseIdMatch && courseNameById.get(courseIdMatch[1])) || 'Unknown course';
+      return {
+        id: a.id,
+        title: a.title,
+        author: a.author?.display_name,
+        course,
+        postedAt: a.posted_at,
+        message: a.message?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+      };
+    });
   } catch (err) {
     logger.error(`[canvas] getAnnouncements failed: ${describeError(err)}`);
     throw err;
