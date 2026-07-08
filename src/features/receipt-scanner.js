@@ -43,7 +43,7 @@ function daysUntil(isoDate) {
   return Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
 }
 
-function buildSummaryMessage(items) {
+function buildSummaryMessage(items, purchaseDate, usedFallback) {
   const grouped = {};
   for (const item of items) {
     const cat = item.category || 'pantry';
@@ -51,7 +51,10 @@ function buildSummaryMessage(items) {
     grouped[cat].push(item);
   }
 
-  const lines = [`🧾 *Receipt scanned — ${items.length} item${items.length !== 1 ? 's' : ''} added*\n`];
+  const dateNote = usedFallback
+    ? ` (couldn't read the date — assumed today)`
+    : ` (purchased ${formatDisplayDate(purchaseDate)})`;
+  const lines = [`🧾 *Receipt scanned${dateNote} — ${items.length} item${items.length !== 1 ? 's' : ''} added*\n`];
 
   const orderedCats = [
     ...CATEGORY_ORDER.filter((c) => grouped[c]),
@@ -94,12 +97,13 @@ function buildSummaryMessage(items) {
 
 async function processReceiptImage(base64Image, caption = '') {
   const today = todayStr();
-  const purchaseDate = today;
 
-  const prompt = `This is a grocery/shopping receipt. Extract all food and household items purchased. For each item, estimate:
+  const prompt = `This is a grocery/shopping receipt. First, find the transaction date printed on the receipt itself (near the top or bottom, often next to a time stamp or store info) — this is the actual purchase date, which may NOT be today.
+
+Then extract all food and household items purchased. For each item, estimate:
 - Item name (clean, readable)
 - Category (produce/dairy/meat/seafood/frozen/pantry/snacks/drinks/household/bread/eggs/leftovers)
-- Typical expiry from purchase date (in days):
+- Typical shelf life FROM THE PURCHASE DATE YOU FOUND (in days):
   * Produce (leafy greens): 5-7 days
   * Produce (fruits): 5-10 days
   * Produce (root vegetables): 14-28 days
@@ -116,19 +120,26 @@ async function processReceiptImage(base64Image, caption = '') {
 - Where to store it (fridge/freezer/pantry/counter)
 - Any brief storage tip (optional, max 6 words)
 
-Today's date is ${today}. Purchase date is ${purchaseDate}.${caption ? `\nAdditional context from user: ${caption}` : ''}
+If the same product appears as a single line with a quantity greater than 1 (e.g. "2 x Bread"), list it ONCE with that quantity — do not repeat it as separate lines.
 
-Reply ONLY with a valid JSON array, no markdown, no commentary:
-[
-  {
-    "name": "Whole Milk",
-    "category": "dairy",
-    "expiry_days": 9,
-    "expiry_date": "YYYY-MM-DD",
-    "storage_location": "fridge",
-    "storage_tip": "Keep on middle shelf"
-  }
-]`;
+Today's date is ${today}, in case the receipt date is unreadable and you must fall back to it — but always prefer the date actually printed on the receipt.${caption ? `\nAdditional context from user: ${caption}` : ''}
+
+Reply ONLY with a valid JSON object, no markdown, no commentary:
+{
+  "purchase_date": "YYYY-MM-DD",
+  "purchase_date_source": "receipt" or "fallback_today",
+  "items": [
+    {
+      "name": "Whole Milk",
+      "category": "dairy",
+      "quantity": "1",
+      "expiry_days": 9,
+      "expiry_date": "YYYY-MM-DD",
+      "storage_location": "fridge",
+      "storage_tip": "Keep on middle shelf"
+    }
+  ]
+}`;
 
   logger.info('[receipt-scanner] Sending image to Claude Vision');
 
@@ -164,14 +175,23 @@ Reply ONLY with a valid JSON array, no markdown, no commentary:
   // Strip markdown code fences if present
   const jsonStr = rawText.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
 
-  let items;
+  let parsed;
   try {
-    items = JSON.parse(jsonStr);
-    if (!Array.isArray(items)) throw new Error('Not an array');
+    parsed = JSON.parse(jsonStr);
+    if (!Array.isArray(parsed?.items)) throw new Error('Missing items array');
   } catch (err) {
     logger.error('[receipt-scanner] Failed to parse Claude response:', err.message, '\nRaw:', rawText.slice(0, 500));
     throw new Error('Could not parse receipt — Claude returned unexpected output');
   }
+
+  const items = parsed.items;
+  const hasValidDate = /^\d{4}-\d{2}-\d{2}$/.test(parsed.purchase_date || '');
+  const purchaseDate = hasValidDate ? parsed.purchase_date : today;
+  const usedFallback = !hasValidDate || parsed.purchase_date_source === 'fallback_today';
+
+  logger.info(usedFallback
+    ? `[receipt-scanner] Could not read a date off the receipt — using today (${today})`
+    : `[receipt-scanner] Receipt purchase date: ${purchaseDate}`);
 
   // Persist each item to DB
   const savedItems = [];
@@ -190,7 +210,7 @@ Reply ONLY with a valid JSON array, no markdown, no commentary:
   }
 
   logger.info(`[receipt-scanner] Saved ${savedItems.length} pantry items from receipt`);
-  return { items: savedItems, summary: buildSummaryMessage(savedItems) };
+  return { items: savedItems, purchaseDate, summary: buildSummaryMessage(savedItems, purchaseDate, usedFallback) };
 }
 
 module.exports = { processReceiptImage };
