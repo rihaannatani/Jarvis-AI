@@ -2,6 +2,7 @@
 const { google } = require('googleapis');
 const { getAuthedClient, hasToken } = require('./calendar');
 const logger = require('../logger');
+const { withResilience } = require('./api-utils');
 
 function gmailClient(account = 'personal') {
   const auth = getAuthedClient(account);
@@ -35,41 +36,43 @@ function getHeader(headers, name) {
 
 async function getRecentEmails(sinceTimestamp, account = 'personal') {
   try {
-    const gmail = gmailClient(account);
-    const after = sinceTimestamp
-      ? Math.floor(sinceTimestamp / 1000)
-      : Math.floor((Date.now() - 15 * 60 * 1000) / 1000);
+    return await withResilience(`gmail:${account}`, async () => {
+      const gmail = gmailClient(account);
+      const after = sinceTimestamp
+        ? Math.floor(sinceTimestamp / 1000)
+        : Math.floor((Date.now() - 15 * 60 * 1000) / 1000);
 
-    const res = await gmail.users.messages.list({
-      userId: 'me',
-      q: `after:${after} -category:promotions -category:social`,
-      maxResults: 30,
+      const res = await gmail.users.messages.list({
+        userId: 'me',
+        q: `after:${after} -category:promotions -category:social`,
+        maxResults: 30,
+      });
+
+      if (!res.data.messages?.length) return [];
+
+      const messages = await Promise.all(
+        res.data.messages.map(async (m) => {
+          try {
+            const msg = await gmail.users.messages.get({ userId: 'me', id: m.id, format: 'full' });
+            const headers = msg.data.payload?.headers || [];
+            return {
+              id: m.id,
+              threadId: msg.data.threadId,
+              from: getHeader(headers, 'From'),
+              to: getHeader(headers, 'To'),
+              cc: getHeader(headers, 'Cc'),
+              subject: getHeader(headers, 'Subject'),
+              date: getHeader(headers, 'Date'),
+              snippet: msg.data.snippet,
+              body: extractBody(msg.data.payload).slice(0, 1000),
+              labelIds: msg.data.labelIds || [],
+              account,
+            };
+          } catch { return null; }
+        })
+      );
+      return messages.filter(Boolean);
     });
-
-    if (!res.data.messages?.length) return [];
-
-    const messages = await Promise.all(
-      res.data.messages.map(async (m) => {
-        try {
-          const msg = await gmail.users.messages.get({ userId: 'me', id: m.id, format: 'full' });
-          const headers = msg.data.payload?.headers || [];
-          return {
-            id: m.id,
-            threadId: msg.data.threadId,
-            from: getHeader(headers, 'From'),
-            to: getHeader(headers, 'To'),
-            cc: getHeader(headers, 'Cc'),
-            subject: getHeader(headers, 'Subject'),
-            date: getHeader(headers, 'Date'),
-            snippet: msg.data.snippet,
-            body: extractBody(msg.data.payload).slice(0, 1000),
-            labelIds: msg.data.labelIds || [],
-            account,
-          };
-        } catch { return null; }
-      })
-    );
-    return messages.filter(Boolean);
   } catch (err) {
     logger.error(`[gmail] getRecentEmails (${account}) failed:`, err.message);
     throw err;
@@ -89,20 +92,22 @@ async function getRecentEmailsAllAccounts(sinceTimestamp) {
 
 async function getEmailContent(id, account = 'personal') {
   try {
-    const gmail = gmailClient(account);
-    const msg = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
-    const headers = msg.data.payload?.headers || [];
-    return {
-      id,
-      threadId: msg.data.threadId,
-      from: getHeader(headers, 'From'),
-      to: getHeader(headers, 'To'),
-      subject: getHeader(headers, 'Subject'),
-      date: getHeader(headers, 'Date'),
-      body: extractBody(msg.data.payload),
-      snippet: msg.data.snippet,
-      account,
-    };
+    return await withResilience(`gmail:${account}`, async () => {
+      const gmail = gmailClient(account);
+      const msg = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
+      const headers = msg.data.payload?.headers || [];
+      return {
+        id,
+        threadId: msg.data.threadId,
+        from: getHeader(headers, 'From'),
+        to: getHeader(headers, 'To'),
+        subject: getHeader(headers, 'Subject'),
+        date: getHeader(headers, 'Date'),
+        body: extractBody(msg.data.payload),
+        snippet: msg.data.snippet,
+        account,
+      };
+    });
   } catch (err) {
     logger.error(`[gmail] getEmailContent (${account}) failed:`, err.message);
     throw err;
@@ -111,36 +116,38 @@ async function getEmailContent(id, account = 'personal') {
 
 async function getImportantEmails(account = 'personal') {
   try {
-    const gmail = gmailClient(account);
-    const res = await gmail.users.messages.list({
-      userId: 'me',
-      q: 'is:unread -category:promotions -category:social -category:updates',
-      maxResults: 20,
+    return await withResilience(`gmail:${account}`, async () => {
+      const gmail = gmailClient(account);
+      const res = await gmail.users.messages.list({
+        userId: 'me',
+        q: 'is:unread -category:promotions -category:social -category:updates',
+        maxResults: 20,
+      });
+
+      if (!res.data.messages?.length) return [];
+
+      const messages = await Promise.all(
+        res.data.messages.slice(0, 10).map(async (m) => {
+          try {
+            const msg = await gmail.users.messages.get({
+              userId: 'me',
+              id: m.id,
+              format: 'metadata',
+              metadataHeaders: ['From', 'Subject', 'Date'],
+            });
+            const headers = msg.data.payload?.headers || [];
+            return {
+              id: m.id,
+              from: getHeader(headers, 'From'),
+              subject: getHeader(headers, 'Subject'),
+              snippet: msg.data.snippet,
+              account,
+            };
+          } catch { return null; }
+        })
+      );
+      return messages.filter(Boolean);
     });
-
-    if (!res.data.messages?.length) return [];
-
-    const messages = await Promise.all(
-      res.data.messages.slice(0, 10).map(async (m) => {
-        try {
-          const msg = await gmail.users.messages.get({
-            userId: 'me',
-            id: m.id,
-            format: 'metadata',
-            metadataHeaders: ['From', 'Subject', 'Date'],
-          });
-          const headers = msg.data.payload?.headers || [];
-          return {
-            id: m.id,
-            from: getHeader(headers, 'From'),
-            subject: getHeader(headers, 'Subject'),
-            snippet: msg.data.snippet,
-            account,
-          };
-        } catch { return null; }
-      })
-    );
-    return messages.filter(Boolean);
   } catch (err) {
     logger.error(`[gmail] getImportantEmails (${account}) failed:`, err.message);
     throw err;
@@ -171,13 +178,15 @@ function buildRaw(to, subject, body) {
 
 async function createDraft(to, subject, body, threadId, account = 'personal') {
   try {
-    const gmail = gmailClient(account);
-    const raw = buildRaw(to, subject, body);
-    const res = await gmail.users.drafts.create({
-      userId: 'me',
-      requestBody: { message: { raw, ...(threadId ? { threadId } : {}) } },
-    });
-    return res.data.id;
+    return await withResilience(`gmail:${account}`, async () => {
+      const gmail = gmailClient(account);
+      const raw = buildRaw(to, subject, body);
+      const res = await gmail.users.drafts.create({
+        userId: 'me',
+        requestBody: { message: { raw, ...(threadId ? { threadId } : {}) } },
+      });
+      return res.data.id;
+    }, { retries: 1 });
   } catch (err) {
     logger.error(`[gmail] createDraft (${account}) failed:`, err.message);
     throw err;
@@ -186,13 +195,17 @@ async function createDraft(to, subject, body, threadId, account = 'personal') {
 
 async function sendRaw(to, subject, body, threadId, account = 'personal') {
   try {
-    const gmail = gmailClient(account);
-    const raw = buildRaw(to, subject, body);
-    await gmail.users.messages.send({
-      userId: 'me',
-      requestBody: { raw, ...(threadId ? { threadId } : {}) },
-    });
-    logger.info(`[gmail] Email sent to ${to} via ${account}`);
+    // No retry here — a retried send on a transient error after the message
+    // already went out would double-send. Auth-failure detection still applies.
+    await withResilience(`gmail:${account}`, async () => {
+      const gmail = gmailClient(account);
+      const raw = buildRaw(to, subject, body);
+      await gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw, ...(threadId ? { threadId } : {}) },
+      });
+      logger.info(`[gmail] Email sent to ${to} via ${account}`);
+    }, { retries: 0 });
   } catch (err) {
     logger.error(`[gmail] sendRaw (${account}) failed:`, err.message);
     throw err;
@@ -201,12 +214,14 @@ async function sendRaw(to, subject, body, threadId, account = 'personal') {
 
 async function markAsRead(id, account = 'personal') {
   try {
-    const gmail = gmailClient(account);
-    await gmail.users.messages.modify({
-      userId: 'me',
-      id,
-      requestBody: { removeLabelIds: ['UNREAD'] },
-    });
+    await withResilience(`gmail:${account}`, async () => {
+      const gmail = gmailClient(account);
+      await gmail.users.messages.modify({
+        userId: 'me',
+        id,
+        requestBody: { removeLabelIds: ['UNREAD'] },
+      });
+    }, { retries: 1 });
   } catch (err) {
     logger.warn(`[gmail] markAsRead (${account}) failed:`, err.message);
   }

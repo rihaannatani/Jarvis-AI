@@ -2,11 +2,13 @@
 const cron = require('node-cron');
 const logger = require('./logger');
 const config = require('./config');
+const { setAlertSender } = require('./integrations/api-utils');
 
 let bot = null;
 
 function setBotInstance(botInstance) {
   bot = botInstance;
+  setAlertSender((text) => safeSend(config.telegram.myChatId, text));
 }
 
 function safeSend(chatId, text) {

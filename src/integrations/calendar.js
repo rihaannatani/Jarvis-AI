@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const logger = require('../logger');
+const { withResilience } = require('./api-utils');
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',  // read + write
@@ -103,22 +104,24 @@ function formatEvent(event, account = 'personal') {
 
 async function getTodayEvents(account = 'personal') {
   try {
-    const auth = getAuthedClient(account);
-    const calendar = google.calendar({ version: 'v3', auth });
-    const tz = config.app.timezone;
-    const now = new Date();
-    const startOfDay = new Date(now.toLocaleDateString('en-US', { timeZone: tz }));
-    const endOfDay = new Date(startOfDay);
-    endOfDay.setDate(endOfDay.getDate() + 1);
+    return await withResilience(`calendar:${account}`, async () => {
+      const auth = getAuthedClient(account);
+      const calendar = google.calendar({ version: 'v3', auth });
+      const tz = config.app.timezone;
+      const now = new Date();
+      const startOfDay = new Date(now.toLocaleDateString('en-US', { timeZone: tz }));
+      const endOfDay = new Date(startOfDay);
+      endOfDay.setDate(endOfDay.getDate() + 1);
 
-    const res = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: startOfDay.toISOString(),
-      timeMax: endOfDay.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
+      const res = await calendar.events.list({
+        calendarId: 'primary',
+        timeMin: startOfDay.toISOString(),
+        timeMax: endOfDay.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+      });
+      return (res.data.items || []).map((e) => formatEvent(e, account));
     });
-    return (res.data.items || []).map((e) => formatEvent(e, account));
   } catch (err) {
     logger.error(`[calendar] getTodayEvents (${account}) failed:`, err.message);
     throw err;
@@ -127,20 +130,22 @@ async function getTodayEvents(account = 'personal') {
 
 async function getWeekEvents(account = 'personal') {
   try {
-    const auth = getAuthedClient(account);
-    const calendar = google.calendar({ version: 'v3', auth });
-    const now = new Date();
-    const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    return await withResilience(`calendar:${account}`, async () => {
+      const auth = getAuthedClient(account);
+      const calendar = google.calendar({ version: 'v3', auth });
+      const now = new Date();
+      const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    const res = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: now.toISOString(),
-      timeMax: nextWeek.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 50,
+      const res = await calendar.events.list({
+        calendarId: 'primary',
+        timeMin: now.toISOString(),
+        timeMax: nextWeek.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 50,
+      });
+      return (res.data.items || []).map((e) => formatEvent(e, account));
     });
-    return (res.data.items || []).map((e) => formatEvent(e, account));
   } catch (err) {
     logger.error(`[calendar] getWeekEvents (${account}) failed:`, err.message);
     throw err;
@@ -149,19 +154,21 @@ async function getWeekEvents(account = 'personal') {
 
 async function getUpcomingEvents(hours = 24, account = 'personal') {
   try {
-    const auth = getAuthedClient(account);
-    const calendar = google.calendar({ version: 'v3', auth });
-    const now = new Date();
-    const future = new Date(now.getTime() + hours * 60 * 60 * 1000);
+    return await withResilience(`calendar:${account}`, async () => {
+      const auth = getAuthedClient(account);
+      const calendar = google.calendar({ version: 'v3', auth });
+      const now = new Date();
+      const future = new Date(now.getTime() + hours * 60 * 60 * 1000);
 
-    const res = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: now.toISOString(),
-      timeMax: future.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
+      const res = await calendar.events.list({
+        calendarId: 'primary',
+        timeMin: now.toISOString(),
+        timeMax: future.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+      });
+      return (res.data.items || []).map((e) => formatEvent(e, account));
     });
-    return (res.data.items || []).map((e) => formatEvent(e, account));
   } catch (err) {
     logger.error(`[calendar] getUpcomingEvents (${account}) failed:`, err.message);
     throw err;
@@ -170,27 +177,29 @@ async function getUpcomingEvents(hours = 24, account = 'personal') {
 
 async function createEvent({ summary, start, end, description, attendees }, account = 'personal') {
   try {
-    const auth = getAuthedClient(account);
-    const calendar = google.calendar({ version: 'v3', auth });
+    return await withResilience(`calendar:${account}`, async () => {
+      const auth = getAuthedClient(account);
+      const calendar = google.calendar({ version: 'v3', auth });
 
-    const resource = {
-      summary,
-      description: description || '',
-      start: { dateTime: start, timeZone: 'America/Phoenix' },
-      end: { dateTime: end, timeZone: 'America/Phoenix' },
-    };
+      const resource = {
+        summary,
+        description: description || '',
+        start: { dateTime: start, timeZone: 'America/Phoenix' },
+        end: { dateTime: end, timeZone: 'America/Phoenix' },
+      };
 
-    if (attendees?.length) {
-      resource.attendees = attendees.map((email) => ({ email }));
-    }
+      if (attendees?.length) {
+        resource.attendees = attendees.map((email) => ({ email }));
+      }
 
-    const res = await calendar.events.insert({
-      calendarId: 'primary',
-      sendUpdates: attendees?.length ? 'all' : 'none',
-      resource,
-    });
-    logger.info(`[calendar] Event created on ${account}: "${summary}"${attendees?.length ? ` (invited ${attendees.length})` : ''}`);
-    return res.data;
+      const res = await calendar.events.insert({
+        calendarId: 'primary',
+        sendUpdates: attendees?.length ? 'all' : 'none',
+        resource,
+      });
+      logger.info(`[calendar] Event created on ${account}: "${summary}"${attendees?.length ? ` (invited ${attendees.length})` : ''}`);
+      return res.data;
+    }, { retries: 1 });
   } catch (err) {
     logger.error(`[calendar] createEvent (${account}) failed:`, err.message);
     throw err;
@@ -199,15 +208,17 @@ async function createEvent({ summary, start, end, description, attendees }, acco
 
 async function deleteEvent(eventId, account = 'personal') {
   try {
-    const auth = getAuthedClient(account);
-    const calendar = google.calendar({ version: 'v3', auth });
-    await calendar.events.delete({
-      calendarId: 'primary',
-      eventId,
-      sendUpdates: 'all',
-    });
-    logger.info(`[calendar] Event deleted on ${account}: ${eventId}`);
-    return { success: true, eventId };
+    return await withResilience(`calendar:${account}`, async () => {
+      const auth = getAuthedClient(account);
+      const calendar = google.calendar({ version: 'v3', auth });
+      await calendar.events.delete({
+        calendarId: 'primary',
+        eventId,
+        sendUpdates: 'all',
+      });
+      logger.info(`[calendar] Event deleted on ${account}: ${eventId}`);
+      return { success: true, eventId };
+    }, { retries: 1 });
   } catch (err) {
     logger.error(`[calendar] deleteEvent (${account}) failed:`, err.message);
     throw err;
@@ -216,25 +227,27 @@ async function deleteEvent(eventId, account = 'personal') {
 
 async function updateEventAttendees(eventId, attendees, account = 'personal') {
   try {
-    const auth = getAuthedClient(account);
-    const calendar = google.calendar({ version: 'v3', auth });
+    return await withResilience(`calendar:${account}`, async () => {
+      const auth = getAuthedClient(account);
+      const calendar = google.calendar({ version: 'v3', auth });
 
-    // Fetch existing attendees first so we don't overwrite them
-    const existing = await calendar.events.get({ calendarId: 'primary', eventId });
-    const existingEmails = new Set((existing.data.attendees || []).map((a) => a.email));
-    const merged = [
-      ...(existing.data.attendees || []),
-      ...attendees.filter((email) => !existingEmails.has(email)).map((email) => ({ email })),
-    ];
+      // Fetch existing attendees first so we don't overwrite them
+      const existing = await calendar.events.get({ calendarId: 'primary', eventId });
+      const existingEmails = new Set((existing.data.attendees || []).map((a) => a.email));
+      const merged = [
+        ...(existing.data.attendees || []),
+        ...attendees.filter((email) => !existingEmails.has(email)).map((email) => ({ email })),
+      ];
 
-    const res = await calendar.events.patch({
-      calendarId: 'primary',
-      eventId,
-      sendUpdates: 'all',
-      resource: { attendees: merged },
-    });
-    logger.info(`[calendar] Patched attendees on ${account} event ${eventId}: added ${attendees.join(', ')}`);
-    return res.data;
+      const res = await calendar.events.patch({
+        calendarId: 'primary',
+        eventId,
+        sendUpdates: 'all',
+        resource: { attendees: merged },
+      });
+      logger.info(`[calendar] Patched attendees on ${account} event ${eventId}: added ${attendees.join(', ')}`);
+      return res.data;
+    }, { retries: 0 });
   } catch (err) {
     logger.error(`[calendar] updateEventAttendees (${account}) failed:`, err.message);
     throw err;

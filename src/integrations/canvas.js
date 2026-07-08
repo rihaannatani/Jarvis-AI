@@ -2,6 +2,7 @@
 const axios = require('axios');
 const config = require('../config');
 const logger = require('../logger');
+const { withResilience } = require('./api-utils');
 
 function client() {
   return axios.create({
@@ -10,15 +11,23 @@ function client() {
   });
 }
 
+function describeError(err) {
+  if (err.response) return `HTTP ${err.response.status} ${JSON.stringify(err.response.data)?.slice(0, 300)}`;
+  if (err.request) return `no response (${err.code || 'network error'})`;
+  return err.message || String(err);
+}
+
 async function getCourses() {
   if (!config.canvas.apiToken) return [];
   try {
-    const res = await client().get('/courses', {
-      params: { enrollment_state: 'active', per_page: 50 },
+    return await withResilience('canvas', async () => {
+      const res = await client().get('/courses', {
+        params: { enrollment_state: 'active', per_page: 50 },
+      });
+      return res.data.filter((c) => c.name && !c.access_restricted_by_date);
     });
-    return res.data.filter((c) => c.name && !c.access_restricted_by_date);
   } catch (err) {
-    logger.error('[canvas] getCourses failed:', err.message);
+    logger.error(`[canvas] getCourses failed: ${describeError(err)}`);
     return [];
   }
 }
@@ -32,13 +41,15 @@ async function getAssignments() {
     const allAssignments = await Promise.all(
       courses.map(async (course) => {
         try {
-          const res = await client().get(`/courses/${course.id}/assignments`, {
-            params: {
-              order_by: 'due_at',
-              per_page: 50,
-              bucket: 'upcoming',
-            },
-          });
+          const res = await withResilience('canvas', () =>
+            client().get(`/courses/${course.id}/assignments`, {
+              params: {
+                order_by: 'due_at',
+                per_page: 50,
+                bucket: 'upcoming',
+              },
+            })
+          );
           return res.data
             .filter((a) => a.due_at)
             .map((a) => ({
@@ -51,7 +62,8 @@ async function getAssignments() {
               submissionTypes: a.submission_types,
               htmlUrl: a.html_url,
             }));
-        } catch {
+        } catch (err) {
+          logger.warn(`[canvas] getAssignments for course ${course.id} failed: ${describeError(err)}`);
           return [];
         }
       })
@@ -62,7 +74,7 @@ async function getAssignments() {
       .filter((a) => new Date(a.dueAt) > now)
       .sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
   } catch (err) {
-    logger.error('[canvas] getAssignments failed:', err.message);
+    logger.error(`[canvas] getAssignments failed: ${describeError(err)}`);
     throw err;
   }
 }
@@ -74,9 +86,11 @@ async function getAnnouncements() {
     const courseIds = courses.map((c) => `context_codes[]=course_${c.id}`).join('&');
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    const res = await client().get(`/announcements?${courseIds}`, {
-      params: { start_date: since, per_page: 20 },
-    });
+    const res = await withResilience('canvas', () =>
+      client().get(`/announcements?${courseIds}`, {
+        params: { start_date: since, per_page: 20 },
+      })
+    );
 
     return res.data.map((a) => ({
       id: a.id,
@@ -87,7 +101,7 @@ async function getAnnouncements() {
       message: a.message?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300),
     }));
   } catch (err) {
-    logger.error('[canvas] getAnnouncements failed:', err.message);
+    logger.error(`[canvas] getAnnouncements failed: ${describeError(err)}`);
     throw err;
   }
 }
@@ -103,8 +117,8 @@ async function getGrades() {
       score: c.enrollments?.[0]?.computed_current_score,
     }));
   } catch (err) {
-    logger.error('[canvas] getGrades failed:', err.message);
-    throw err;
+    logger.error(`[canvas] getGrades failed: ${describeError(err)}`);
+    return [];
   }
 }
 

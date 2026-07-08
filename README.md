@@ -62,6 +62,18 @@ Message your bot on Telegram — say anything. Jarvis responds.
 5. Download JSON → rename to `credentials.json` → put in project root
 6. Run `npm run setup`
 
+**Important — avoid the recurring "Google stopped working" outage:** while the
+OAuth consent screen is in **Testing** status, Google expires both the access
+token *and* the refresh token after **~7 days**, with no automatic recovery —
+Jarvis will silently lose Calendar/Gmail access on a weekly cadence until you
+manually re-run `npm run setup`. To fix permanently, go to **OAuth consent
+screen** in Google Cloud Console and click **Publish App** to move it to
+**Production** (for personal-use scopes like Calendar/Gmail this does not
+require Google's verification review, just a warning screen on first login).
+Once Production, refresh tokens don't expire until you revoke them. Jarvis
+will also log a warning on startup and send a Telegram alert if it detects the
+refresh token has expired or is about to.
+
 ---
 
 ## Deploying to GCP Free Tier (always-on, $0)
@@ -81,8 +93,10 @@ scp -i your-key.pem .env ubuntu@YOUR_IP:~/jarvis/
 scp -i your-key.pem credentials.json ubuntu@YOUR_IP:~/jarvis/
 scp -i your-key.pem data/google-token.json ubuntu@YOUR_IP:~/jarvis/data/
 
-# Start with PM2
-pm2 start src/index.js --name jarvis
+# Start with PM2 — use the npm script, not src/index.js directly,
+# so the --experimental-sqlite flag (required by state.js) is applied.
+# Starting via `pm2 start src/index.js` omits the flag and crash-loops on boot.
+pm2 start npm --name jarvis -- start
 pm2 save
 pm2 startup   # run the command it prints
 ```
