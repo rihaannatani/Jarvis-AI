@@ -50,6 +50,32 @@ function isAuthorized(chatId) {
   return String(chatId) === String(MY_CHAT_ID);
 }
 
+function formatTaskDue(dueDate) {
+  if (!dueDate) return '';
+  const d = new Date(dueDate.length <= 10 ? `${dueDate}T00:00:00` : dueDate);
+  if (isNaN(d)) return '';
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((d - today) / (1000 * 60 * 60 * 24));
+  const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (days < 0) return ` — ⚠️ overdue (${dateStr})`;
+  if (days === 0) return ` — due today`;
+  if (days === 1) return ` — due tomorrow`;
+  return ` — due ${dateStr}`;
+}
+
+function buildTasksView() {
+  const tasks = state.listOpenTasks();
+  if (!tasks.length) {
+    return { text: "✅ No open tasks — you're all caught up.", keyboard: [] };
+  }
+  const lines = tasks.map((t, i) => `${i + 1}. ${t.content}${formatTaskDue(t.due_date)}`);
+  const text = `*Open tasks:*\n${lines.join('\n')}\n\nTap ✅ to mark one done.`;
+  const keyboard = tasks.map((t, i) => ([
+    { text: `✅ ${i + 1}`, callback_data: `task_done_${t.id}` },
+  ]));
+  return { text, keyboard };
+}
+
 function init() {
   const bot = new TelegramBot(config.telegram.botToken, { polling: true });
 
@@ -83,6 +109,17 @@ function init() {
       await removeKeyboard();
       await sendSafe(bot, chatId, "👍 Skipped. I'll check again in 2 hours.");
       state.setSetting('workday_pending_jobs', '');
+
+    } else if (data.startsWith('task_done_')) {
+      const taskId = Number(data.slice('task_done_'.length));
+      const task = state.getTask(taskId);
+      await removeKeyboard();
+      if (!task || task.done) {
+        await sendSafe(bot, chatId, 'That task is already gone.');
+        return;
+      }
+      state.completeTask(taskId);
+      await sendSafe(bot, chatId, `✅ Done: ${task.content}`);
     }
   });
 
@@ -104,6 +141,17 @@ function init() {
     bot.sendChatAction(chatId, 'typing').catch(() => {});
 
     try {
+      // ── Tasks: /tasks command ─────────────────────────────────────────────
+      if (/^\/tasks\b/i.test(text)) {
+        const { text: viewText, keyboard } = buildTasksView();
+        if (keyboard.length) {
+          await bot.sendMessage(chatId, viewText, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
+        } else {
+          await sendSafe(bot, chatId, viewText);
+        }
+        return;
+      }
+
       // Check if this is a draft approval action first
       const handled = await handleDraftAction(chatId, text, (t) => sendSafe(bot, chatId, t));
       if (handled) return;

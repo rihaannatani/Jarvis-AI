@@ -77,6 +77,22 @@ async function execute(toolName, toolInput, chatId) {
       return { count: drafts.length, drafts };
     }
 
+    case 'add_task': {
+      const id = state.addTask(toolInput.content, toolInput.due_date || null, toolInput.source || 'auto');
+      logger.info(`[router] Task added [#${id}]: ${toolInput.content}`);
+      return { success: true, id };
+    }
+
+    case 'complete_task': {
+      state.completeTask(toolInput.task_id);
+      logger.info(`[router] Task completed: #${toolInput.task_id}`);
+      return { success: true };
+    }
+
+    case 'list_tasks': {
+      return state.listOpenTasks();
+    }
+
     case 'save_memory': {
       const id = state.saveMemory(toolInput.category, toolInput.content, toolInput.source || 'auto');
       logger.info(`[router] Memory saved [#${id}]: ${toolInput.content}`);

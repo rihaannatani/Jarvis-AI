@@ -4,6 +4,8 @@ const config = require('../config');
 const logger = require('../logger');
 const state = require('../state');
 
+const MODEL = config.anthropic.model;
+
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const CATEGORY_EMOJI = {
@@ -131,7 +133,7 @@ Reply ONLY with a valid JSON array, no markdown, no commentary:
   logger.info('[receipt-scanner] Sending image to Claude Vision');
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: MODEL,
     max_tokens: 2048,
     messages: [
       {
@@ -153,7 +155,7 @@ Reply ONLY with a valid JSON array, no markdown, no commentary:
 
   const usage = response.usage;
   if (usage) {
-    state.logApiUsage('receipt-scan', 'claude-sonnet-4-20250514', usage.input_tokens, usage.output_tokens);
+    state.logApiUsage('receipt-scan', MODEL, usage.input_tokens, usage.output_tokens);
     logger.info(`[receipt-scanner] Vision call — input: ${usage.input_tokens}, output: ${usage.output_tokens}`);
   }
 

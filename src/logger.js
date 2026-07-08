@@ -35,4 +35,21 @@ const logger = createLogger({
   ],
 });
 
+// The codebase's convention is logger.error('label:', err.message) — Winston only
+// pulls message/stack out of an actual Error passed as metadata, so a trailing
+// plain string (or Error) arg was being silently dropped instead of appended.
+// Wrap the level methods to fold extra args into the log line so nothing vanishes.
+function wrapLevel(level) {
+  const original = logger[level].bind(logger);
+  logger[level] = (message, ...args) => {
+    if (!args.length) return original(message);
+    const extra = args
+      .map((a) => (a instanceof Error ? (a.stack || a.message) : typeof a === 'object' ? JSON.stringify(a) : String(a)))
+      .join(' ');
+    return original(`${message} ${extra}`);
+  };
+}
+
+['error', 'warn', 'info', 'debug'].forEach(wrapLevel);
+
 module.exports = logger;

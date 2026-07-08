@@ -97,6 +97,35 @@ const TOOLS = [
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
+    name: 'add_task',
+    description: 'Add a to-do task to the tracked task list. Use this for anything Rihaan needs to get done, as opposed to save_memory which is for facts/preferences/context.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'What needs to be done' },
+        due_date: { type: 'string', description: 'Optional due date, ISO 8601 (YYYY-MM-DD or full datetime)' },
+        source: { type: 'string', enum: ['user', 'auto'], description: 'user = explicitly asked, auto = inferred from conversation' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'complete_task',
+    description: 'Mark a tracked task as done',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'number', description: 'The numeric task ID shown as [#N] in the task list' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'list_tasks',
+    description: 'Get the list of currently open (not done) tracked tasks',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
     name: 'save_memory',
     description: 'Persist an important fact, task, preference, or context so it survives across conversations',
     input_schema: {

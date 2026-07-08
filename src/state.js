@@ -73,6 +73,21 @@ db.exec(`
   );
 `);
 
+// Tasks table — dedicated to-dos, separate from the general memories table
+// so they get a real due_date and done state instead of sharing memories'
+// blunt active/inactive flag with facts/preferences/context.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    due_date TEXT,
+    done INTEGER DEFAULT 0,
+    source TEXT DEFAULT 'auto',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    done_at DATETIME
+  );
+`);
+
 // Canvas watcher tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS seen_announcements (
@@ -341,6 +356,33 @@ function getActiveMemories() {
   return `\n\n## What I remember about you:\n${sections.join('\n\n')}`;
 }
 
+// ─── Task helpers ─────────────────────────────────────────────────────────────
+
+function addTask(content, dueDate, source = 'auto') {
+  const result = db.prepare(
+    `INSERT INTO tasks (content, due_date, source) VALUES (?, ?, ?)`
+  ).run(content, dueDate || null, source);
+  return result.lastInsertRowid;
+}
+
+function listOpenTasks() {
+  return db.prepare(
+    `SELECT id, content, due_date, source, created_at FROM tasks WHERE done = 0 ORDER BY (due_date IS NULL), due_date ASC, created_at ASC`
+  ).all();
+}
+
+function getTask(id) {
+  return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id);
+}
+
+function completeTask(id) {
+  db.prepare(`UPDATE tasks SET done = 1, done_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+}
+
+function deleteTask(id) {
+  db.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+}
+
 // ─── Maps cache helpers ───────────────────────────────────────────────────────
 
 const MAPS_CACHE_TTL_MIN = 30;
@@ -463,6 +505,11 @@ module.exports = {
   forgetMemory,
   listActiveMemories,
   getActiveMemories,
+  addTask,
+  listOpenTasks,
+  getTask,
+  completeTask,
+  deleteTask,
   saveMessage,
   saveDraft,
   getPendingDrafts,
