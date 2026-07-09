@@ -20,9 +20,9 @@ async function assemblNightBrief() {
   const tomorrowEnd = new Date(tomorrowStart.getTime() + 24 * 60 * 60 * 1000);
 
   const results = await Promise.allSettled([
-    require('../integrations/calendar').getTodayEvents(),
+    require('../integrations/calendar').getTodayEventsAllAccounts(),
     require('../integrations/canvas').getAssignments(),
-    require('../integrations/calendar').getWeekEvents(),
+    require('../integrations/calendar').getWeekEventsAllAccounts(),
   ]);
 
   const [calendarResult, canvasResult, weekCalResult] = results;
@@ -56,9 +56,15 @@ async function assemblNightBrief() {
     ? calendarResult.value.map((e) => ({ summary: e.summary, start: e.start, end: e.end }))
     : null;
 
-  // Pending drafts — just subject + to (no full draft text, saves tokens)
+  // Pending drafts — just subject + to (no full draft text, saves tokens).
+  // daysOld lets the prompt stop calling week-old drafts "time-sensitive".
   const draftsClean = pendingDrafts.length
-    ? pendingDrafts.map((d) => ({ id: d.id, subject: d.subject, to: d.to_address }))
+    ? pendingDrafts.map((d) => ({
+        id: d.id,
+        subject: d.subject,
+        to: d.to_address,
+        daysOld: Math.floor((Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60 * 24)),
+      }))
     : [];
 
   // API usage summary for the day

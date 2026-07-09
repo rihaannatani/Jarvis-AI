@@ -44,6 +44,12 @@ async function sendSafe(bot, chatId, text) {
       }
     }
   }
+  // Single save-point for every message this bot ever sends directly (draft
+  // actions, receipt summaries, workday alerts, chat replies, task
+  // confirmations) — without this, a follow-up question about anything the
+  // bot "just said" outside a plain chat reply hits blank context, the same
+  // bug the receipt-scanning thread showed.
+  state.saveMessage(chatId, 'assistant', text);
 }
 
 function isAuthorized(chatId) {
@@ -202,6 +208,11 @@ function init() {
       const dlResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
       const base64Image = Buffer.from(dlResponse.data).toString('base64');
       const caption = msg.caption || '';
+
+      // Record the user's turn now — Telegram photos never pass through the
+      // text handler, so this is the only place it'd otherwise be captured.
+      // The assistant's summary is saved automatically inside sendSafe().
+      state.saveMessage(chatId, 'user', caption ? `[sent a photo of a receipt] ${caption}` : '[sent a photo of a receipt]');
 
       await sendSafe(bot, chatId, '🔍 Scanning receipt...');
       const { summary } = await processReceiptImage(base64Image, caption);

@@ -97,6 +97,33 @@ const TOOLS = [
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
+    name: 'send_draft',
+    description: 'Approve and send a pending email draft. Use this whenever the user asks to send/approve a draft in natural conversation, not just via the exact word "approve".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        draft_id: { type: 'number', description: 'The draft ID from get_pending_drafts. If omitted, sends the most recently created pending draft.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'discard_draft',
+    description: 'Discard a single pending email draft without sending it',
+    input_schema: {
+      type: 'object',
+      properties: {
+        draft_id: { type: 'number', description: 'The draft ID from get_pending_drafts. If omitted, discards the most recently created pending draft.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'discard_all_drafts',
+    description: 'Discard every pending email draft at once — use when the user wants to clear the whole backlog (e.g. "clear all my drafts")',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
     name: 'add_task',
     description: 'Add a to-do task to the tracked task list. Use this for anything Rihaan needs to get done, as opposed to save_memory which is for facts/preferences/context.',
     input_schema: {
@@ -181,6 +208,23 @@ const TOOLS = [
         account: { type: 'string', enum: ['personal', 'asu'], description: 'Which calendar the event is on' },
       },
       required: ['event_id', 'attendees'],
+    },
+  },
+  {
+    name: 'update_calendar_event',
+    description: 'Reschedule, retitle, relocate, or redescribe an existing calendar event. Only pass the fields that are changing.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'The Google Calendar event ID' },
+        summary: { type: 'string', description: 'New event title, if changing' },
+        start: { type: 'string', description: 'New ISO 8601 start datetime in America/Phoenix, if changing' },
+        end: { type: 'string', description: 'New ISO 8601 end datetime in America/Phoenix, if changing' },
+        location: { type: 'string', description: 'New location, if changing' },
+        description: { type: 'string', description: 'New description, if changing' },
+        account: { type: 'string', enum: ['personal', 'asu'], description: 'Which calendar the event is on' },
+      },
+      required: ['event_id'],
     },
   },
   {
@@ -325,14 +369,33 @@ async function executeTool(toolName, toolInput, chatId) {
   }
 }
 
+// The Anthropic API requires strictly alternating user/assistant turns.
+// History now includes proactive notifications (email/Canvas alerts,
+// reminders, draft previews) saved back-to-back with no user turn between
+// them, so collapse consecutive same-role entries into one before sending.
+function collapseConsecutiveRoles(msgs) {
+  const out = [];
+  for (const m of msgs) {
+    const last = out[out.length - 1];
+    if (last && last.role === m.role) {
+      last.content = `${last.content}\n\n${m.content}`;
+    } else {
+      out.push({ role: m.role, content: m.content });
+    }
+  }
+  return out;
+}
+
 async function chat(chatId, userMessage) {
   const history = state.getMessages(chatId);  // capped at MAX_MESSAGES in state.js
-  // Only use last 10 messages to cap context
-  const recentHistory = history.slice(-10);
-  const messages = [
+  // Last 16 messages — raised from 10 now that history also includes
+  // proactive notifications, which would otherwise crowd out real
+  // back-and-forth turns before the model ever sees them.
+  const recentHistory = history.slice(-16);
+  const messages = collapseConsecutiveRoles([
     ...recentHistory.map((m) => ({ role: m.role, content: m.content })),
     { role: 'user', content: userMessage },
-  ];
+  ]);
 
   state.saveMessage(chatId, 'user', userMessage);
 
@@ -353,13 +416,16 @@ async function chat(chatId, userMessage) {
     if (response.usage) logUsage('conversation', MODEL_SMART, response.usage);
 
     if (response.stop_reason === 'end_turn') {
+      // Not saved here — sendSafe() saves it once the reply is actually
+      // delivered, so history reflects what the user was shown, not just
+      // what got generated (same single save-point every other outbound
+      // message goes through).
       const textContent = response.content
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join('\n')
         .trim();
 
-      state.saveMessage(chatId, 'assistant', textContent);
       return textContent;
     }
 
@@ -382,9 +448,7 @@ async function chat(chatId, userMessage) {
     break;
   }
 
-  const fallback = "I ran into an issue processing that. Try again in a moment.";
-  state.saveMessage(chatId, 'assistant', fallback);
-  return fallback;
+  return "I ran into an issue processing that. Try again in a moment.";
 }
 
 // Full-context Sonnet call — briefs, email drafts, complex reasoning

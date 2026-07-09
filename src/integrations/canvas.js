@@ -17,15 +17,27 @@ function describeError(err) {
   return err.message || String(err);
 }
 
+// Assignments, announcements, and grades each need the course list, and
+// several cron jobs (morning brief, canvas watcher, assignment reminders)
+// can all fire within the same minute — cache briefly so a burst of calls
+// shares one request instead of hammering Canvas with duplicates.
+const COURSES_CACHE_MS = 60 * 1000;
+let coursesCache = { data: null, fetchedAt: 0 };
+
 async function getCourses() {
   if (!config.canvas.apiToken) return [];
+  if (coursesCache.data && Date.now() - coursesCache.fetchedAt < COURSES_CACHE_MS) {
+    return coursesCache.data;
+  }
   try {
-    return await withResilience('canvas', async () => {
+    const courses = await withResilience('canvas', async () => {
       const res = await client().get('/courses', {
         params: { enrollment_state: 'active', per_page: 50 },
       });
       return res.data.filter((c) => c.name && !c.access_restricted_by_date);
     });
+    coursesCache = { data: courses, fetchedAt: Date.now() };
+    return courses;
   } catch (err) {
     logger.error(`[canvas] getCourses failed: ${describeError(err)}`);
     return [];

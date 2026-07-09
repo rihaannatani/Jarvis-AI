@@ -171,7 +171,10 @@ logger.info('[state] Database ready at ' + DB_PATH);
 
 // ─── Conversation helpers ────────────────────────────────────────────────────
 
-const MAX_MESSAGES = 30;
+// Raised from 30 — history now also captures proactive notifications
+// (email/Canvas alerts, reminders, briefs), which consume slots faster
+// than pure back-and-forth chat did.
+const MAX_MESSAGES = 50;
 
 function getMessages(chatId) {
   return db
@@ -235,6 +238,17 @@ function updateDraftStatus(draftId, status) {
 
 function updateDraftText(draftId, newText) {
   db.prepare(`UPDATE pending_drafts SET draft_text = ? WHERE id = ?`).run(newText, draftId);
+}
+
+function getDraftById(draftId) {
+  return db.prepare(`SELECT * FROM pending_drafts WHERE id = ?`).get(draftId);
+}
+
+function discardAllPendingDrafts(chatId) {
+  const result = db
+    .prepare(`UPDATE pending_drafts SET status = 'discarded' WHERE telegram_chat_id = ? AND status = 'pending'`)
+    .run(String(chatId));
+  return result.changes;
 }
 
 // ─── Seen email helpers ───────────────────────────────────────────────────────
@@ -516,6 +530,8 @@ module.exports = {
   getPendingDraft,
   updateDraftStatus,
   updateDraftText,
+  getDraftById,
+  discardAllPendingDrafts,
   isEmailSeen,
   markEmailSeen,
   saveReminder,

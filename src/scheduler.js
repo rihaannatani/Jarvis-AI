@@ -2,6 +2,7 @@
 const cron = require('node-cron');
 const logger = require('./logger');
 const config = require('./config');
+const state = require('./state');
 const { setAlertSender } = require('./integrations/api-utils');
 
 let bot = null;
@@ -13,6 +14,11 @@ function setBotInstance(botInstance) {
 
 function safeSend(chatId, text) {
   if (!bot) return Promise.resolve();
+  // Save to conversation history so a follow-up chat message about this
+  // notification (a new-email alert, a Canvas announcement, a reminder,
+  // a brief) has something to actually refer to — these used to be
+  // invisible to claude.chat() the moment they scrolled off-screen.
+  state.saveMessage(chatId, 'assistant', text);
   return sendSplit(chatId, text);
 }
 
@@ -69,8 +75,11 @@ function init() {
   }, { timezone: TZ });
   jobCount++;
 
-  // Email watcher — every 15 minutes
-  cron.schedule('*/15 * * * *', async () => {
+  // Email watcher — every 15 minutes, offset from :00/:15/:30/:45 so it
+  // doesn't pile onto the same second as the morning/night brief and the
+  // other :00-aligned jobs below (was causing a burst of concurrent Gmail
+  // calls right as the 7am brief needed clean data).
+  cron.schedule('3,18,33,48 * * * *', async () => {
     logger.debug('[scheduler] Checking emails');
     try {
       const { checkNewEmails } = require('./features/email-watcher');
@@ -81,8 +90,9 @@ function init() {
   }, { timezone: TZ });
   jobCount++;
 
-  // Canvas watcher — every 30 minutes
-  cron.schedule('*/30 * * * *', async () => {
+  // Canvas watcher — every 30 minutes, offset from :00/:30 for the same
+  // reason as the email watcher above (was stacking on the 7am brief).
+  cron.schedule('5,35 * * * *', async () => {
     logger.debug('[scheduler] Running Canvas watcher');
     try {
       const { runCanvasWatcher } = require('./features/canvas-watcher');
@@ -105,8 +115,10 @@ function init() {
   }, { timezone: TZ });
   jobCount++;
 
-  // Assignment deadline reminders — every 30 minutes
-  cron.schedule('*/30 * * * *', async () => {
+  // Assignment deadline reminders — every 30 minutes, offset from both the
+  // Canvas watcher above and :00/:30 so the two don't compete for the same
+  // Canvas request window.
+  cron.schedule('10,40 * * * *', async () => {
     try {
       const { checkAssignmentReminders } = require('./features/reminders');
       await checkAssignmentReminders((cid, text) => safeSend(cid, text));

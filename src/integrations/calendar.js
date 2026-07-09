@@ -254,7 +254,51 @@ async function updateEventAttendees(eventId, attendees, account = 'personal') {
   }
 }
 
+async function updateEvent(eventId, { summary, start, end, location, description }, account = 'personal') {
+  try {
+    return await withResilience(`calendar:${account}`, async () => {
+      const auth = getAuthedClient(account);
+      const calendar = google.calendar({ version: 'v3', auth });
+
+      const resource = {};
+      if (summary !== undefined) resource.summary = summary;
+      if (location !== undefined) resource.location = location;
+      if (description !== undefined) resource.description = description;
+      if (start !== undefined) resource.start = { dateTime: start, timeZone: 'America/Phoenix' };
+      if (end !== undefined) resource.end = { dateTime: end, timeZone: 'America/Phoenix' };
+
+      const res = await calendar.events.patch({
+        calendarId: 'primary',
+        eventId,
+        sendUpdates: 'all',
+        resource,
+      });
+      logger.info(`[calendar] Event updated on ${account}: ${eventId}`);
+      return res.data;
+    }, { retries: 1 });
+  } catch (err) {
+    logger.error(`[calendar] updateEvent (${account}) failed:`, err.message);
+    throw err;
+  }
+}
+
 // ── Multi-account helpers ────────────────────────────────────────────────────
+
+// Same real-world event (e.g. a flight) sometimes exists as a separate entry
+// on each linked account, worded differently. An exact start+end match is a
+// reliable enough signal that two entries represent the same event — keep
+// the first one seen and drop the rest.
+function dedupeByTime(events) {
+  const seen = new Set();
+  const out = [];
+  for (const event of events) {
+    const key = `${new Date(event.start).getTime()}_${new Date(event.end).getTime()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(event);
+  }
+  return out;
+}
 
 async function mergeFromAccounts(fetchFn) {
   const accounts = ['personal', 'asu'].filter(hasToken);
@@ -264,7 +308,7 @@ async function mergeFromAccounts(fetchFn) {
     if (results[i].status === 'fulfilled') all.push(...results[i].value);
     else logger.warn(`[calendar] ${accounts[i]} fetch failed:`, results[i].reason?.message);
   }
-  return all.sort((a, b) => new Date(a.start) - new Date(b.start));
+  return dedupeByTime(all.sort((a, b) => new Date(a.start) - new Date(b.start)));
 }
 
 async function getTodayEventsAllAccounts() {
@@ -289,6 +333,7 @@ module.exports = {
   getUpcomingEvents,
   createEvent,
   deleteEvent,
+  updateEvent,
   updateEventAttendees,
   getTodayEventsAllAccounts,
   getWeekEventsAllAccounts,

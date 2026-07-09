@@ -1,7 +1,8 @@
 'use strict';
+const config = require('../config');
 
 function draftReplyPrompt({ originalEmail, instruction }) {
-  return `Draft a reply to the following email.
+  return `Draft a reply to the following email, on behalf of ${config.userName}.
 
 ORIGINAL EMAIL:
 From: ${originalEmail.from}
@@ -15,7 +16,7 @@ WRITING RULES:
 - Sound like a real person, not a corporate template
 - Match the tone of the original email (formal if they're formal, casual if casual)
 - Be concise — say what needs to be said, nothing more
-- End with an appropriate sign-off (use just a first name or "Best," based on the relationship)
+- Sign off with "${config.userName}" (or "Best, ${config.userName}") — never a placeholder like "Your Name"
 - Do NOT include a subject line — just the body of the reply
 - Do NOT include any commentary before or after the draft — output only the email body`;
 }

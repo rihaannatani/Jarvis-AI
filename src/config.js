@@ -50,6 +50,7 @@ const config = {
     process.env.PERSONAL_EMAIL || '',
     'rnatani1@asu.edu',
   ].filter(Boolean).map((e) => e.toLowerCase()),
+  userName: process.env.USER_NAME || 'Rihaan',
   app: {
     nodeEnv: process.env.NODE_ENV || 'development',
     port: parseInt(process.env.PORT || '3000', 10),

@@ -146,6 +146,7 @@ Reply ONLY with a valid JSON object, no markdown, no commentary:
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
+    temperature: 0, // deterministic extraction — same receipt should read the same way every time
     messages: [
       {
         role: 'user',

@@ -13,19 +13,29 @@ function decodeBase64(str) {
   return Buffer.from(str.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
 }
 
+// Recursively walk the MIME tree (Gmail nests multipart/alternative inside
+// multipart/mixed for quoted-reply threads, so a single-level scan misses the
+// text entirely and silently returns '').
+function findPart(payload, mimeType) {
+  if (!payload) return null;
+  if (payload.mimeType === mimeType && payload.body?.data) return payload.body.data;
+  for (const part of payload.parts || []) {
+    const found = findPart(part, mimeType);
+    if (found) return found;
+  }
+  return null;
+}
+
 function extractBody(payload) {
   if (!payload) return '';
-  if (payload.body?.data) return decodeBase64(payload.body.data);
-  if (payload.parts) {
-    for (const part of payload.parts) {
-      if (part.mimeType === 'text/plain' && part.body?.data) return decodeBase64(part.body.data);
-    }
-    for (const part of payload.parts) {
-      if (part.mimeType === 'text/html' && part.body?.data) {
-        return decodeBase64(part.body.data).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      }
-    }
-  }
+  if (payload.body?.data && !payload.parts) return decodeBase64(payload.body.data);
+
+  const plain = findPart(payload, 'text/plain');
+  if (plain) return decodeBase64(plain);
+
+  const html = findPart(payload, 'text/html');
+  if (html) return decodeBase64(html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
   return '';
 }
 

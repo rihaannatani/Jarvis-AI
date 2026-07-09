@@ -42,6 +42,13 @@ async function execute(toolName, toolInput, chatId) {
       return await updateEventAttendees(toolInput.event_id, toolInput.attendees, account);
     }
 
+    case 'update_calendar_event': {
+      const { updateEvent } = require('./integrations/calendar');
+      const account = toolInput.account || 'personal';
+      const { event_id, ...fields } = toolInput;
+      return await updateEvent(event_id, fields, account);
+    }
+
     case 'get_weather': {
       const { getWeatherSummary } = require('./integrations/weather');
       return await getWeatherSummary();
@@ -75,6 +82,27 @@ async function execute(toolName, toolInput, chatId) {
     case 'get_pending_drafts': {
       const drafts = state.getPendingDrafts(chatId);
       return { count: drafts.length, drafts };
+    }
+
+    case 'send_draft': {
+      const { sendRaw } = require('./integrations/gmail');
+      const draft = toolInput.draft_id ? state.getDraftById(toolInput.draft_id) : state.getPendingDraft(chatId);
+      if (!draft || draft.status !== 'pending') return { error: 'No matching pending draft found' };
+      await sendRaw(draft.to_address, draft.subject, draft.draft_text, draft.thread_id, draft.account || 'personal');
+      state.updateDraftStatus(draft.id, 'approved');
+      return { success: true, sent_to: draft.to_address, subject: draft.subject };
+    }
+
+    case 'discard_draft': {
+      const draft = toolInput.draft_id ? state.getDraftById(toolInput.draft_id) : state.getPendingDraft(chatId);
+      if (!draft || draft.status !== 'pending') return { error: 'No matching pending draft found' };
+      state.updateDraftStatus(draft.id, 'discarded');
+      return { success: true, discarded_id: draft.id };
+    }
+
+    case 'discard_all_drafts': {
+      const count = state.discardAllPendingDrafts(chatId);
+      return { success: true, discarded_count: count };
     }
 
     case 'add_task': {

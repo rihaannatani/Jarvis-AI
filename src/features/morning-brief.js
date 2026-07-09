@@ -99,7 +99,9 @@ async function assembleMorningBrief() {
   const results = await Promise.allSettled([
     require('../integrations/weather').getWeatherSummary(),
     require('../integrations/calendar').getTodayEventsAllAccounts(),
-    Promise.all([
+    // allSettled (not all) so one failing sub-call doesn't blank the whole
+    // Canvas section when the other one would've succeeded.
+    Promise.allSettled([
       require('../integrations/canvas').getAssignments(),
       require('../integrations/canvas').getAnnouncements(),
     ]),
@@ -111,20 +113,25 @@ async function assembleMorningBrief() {
   let calendarData = calendarResult.status === 'fulfilled' ? calendarResult.value : null;
   if (calendarData) calendarData = await enrichEventsWithTravel(calendarData);
 
+  const [assignmentsResult, announcementsResult] =
+    canvasResult.status === 'fulfilled' ? canvasResult.value : [null, null];
+
   const raw = {
     date,
     weather: weatherResult.status === 'fulfilled' ? weatherResult.value : null,
     calendar: calendarData,
-    canvas: canvasResult.status === 'fulfilled'
-      ? { assignments: canvasResult.value[0], announcements: canvasResult.value[1] }
-      : null,
+    canvas: {
+      assignments: assignmentsResult?.status === 'fulfilled' ? assignmentsResult.value : null,
+      announcements: announcementsResult?.status === 'fulfilled' ? announcementsResult.value : null,
+    },
     gmail: gmailResult.status === 'fulfilled' ? gmailResult.value : null,
   };
 
-  results.forEach((r, i) => {
-    const names = ['weather', 'calendar', 'canvas', 'gmail'];
-    if (r.status === 'rejected') logger.warn(`[morning-brief] ${names[i]} fetch failed:`, r.reason?.message);
-  });
+  if (weatherResult.status === 'rejected') logger.warn('[morning-brief] weather fetch failed:', weatherResult.reason?.message);
+  if (calendarResult.status === 'rejected') logger.warn('[morning-brief] calendar fetch failed:', calendarResult.reason?.message);
+  if (assignmentsResult?.status === 'rejected') logger.warn('[morning-brief] canvas assignments fetch failed:', assignmentsResult.reason?.message);
+  if (announcementsResult?.status === 'rejected') logger.warn('[morning-brief] canvas announcements fetch failed:', announcementsResult.reason?.message);
+  if (gmailResult.status === 'rejected') logger.warn('[morning-brief] gmail fetch failed:', gmailResult.reason?.message);
 
   const filtered = prefilterForBrief(raw);
   const expiringSection = buildExpiringSoonSection();
