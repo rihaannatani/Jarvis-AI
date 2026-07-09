@@ -84,6 +84,20 @@ async function execute(toolName, toolInput, chatId) {
       return { count: drafts.length, drafts };
     }
 
+    case 'get_email_content': {
+      const { getEmailContent } = require('./integrations/gmail');
+      let emailId = toolInput.email_id;
+      let account = toolInput.account || 'personal';
+      if (toolInput.draft_id) {
+        const draft = state.getDraftById(toolInput.draft_id);
+        if (!draft) return { error: 'No draft found with that ID' };
+        emailId = draft.email_id;
+        account = draft.account || 'personal';
+      }
+      if (!emailId) return { error: 'Need either draft_id or email_id' };
+      return await getEmailContent(emailId, account);
+    }
+
     case 'send_draft': {
       const { sendRaw } = require('./integrations/gmail');
       const draft = toolInput.draft_id ? state.getDraftById(toolInput.draft_id) : state.getPendingDraft(chatId);

@@ -36,6 +36,7 @@ AVAILABLE TOOLS (use them when relevant — don't ask permission):
 - update_calendar_event — reschedule, retitle, relocate, or redescribe an existing event by ID
 - set_reminder — schedule a reminder at a specific time (provide message and ISO datetime)
 - get_pending_drafts — check if any email drafts need approval
+- get_email_content — fetch the full original body of a specific email (by draft_id, or email_id + account) when it's not in the recent unread scan anymore
 - send_draft — approve and send a pending draft (by ID, or most recent if unspecified)
 - discard_draft — discard a single pending draft without sending it
 - discard_all_drafts — discard the entire pending draft backlog at once
@@ -60,6 +61,7 @@ WHEN TO USE TOOLS:
 - "Block time", "schedule", "add event", "put on my calendar" → create_calendar_event
 - "Remind me to X at Y" → parse the time and use set_reminder
 - Questions about pending email drafts → get_pending_drafts
+- "Look at that email again" / "what did they actually say" / re-checking details behind a draft → get_email_content (use draft_id if the user is referring to a specific pending draft)
 - "Send it" / "approve that" / "yes send" (about a draft) → send_draft, even if the user doesn't say the exact word "approve"
 - "Discard it" / "trash that" / "skip that one" (about a draft) → discard_draft
 - "Clear all my drafts" / "discard everything" → discard_all_drafts, then confirm how many were cleared

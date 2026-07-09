@@ -97,6 +97,19 @@ const TOOLS = [
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
+    name: 'get_email_content',
+    description: "Fetch the full original body of a specific email — use this when the user asks to re-check, re-read, or find details in an email that's no longer in the recent unread scan (e.g. it's already been processed into a draft, or fell out of get_gmail_important). Prefer draft_id when the request is about a pending draft's source email.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        draft_id: { type: 'number', description: "The draft ID from get_pending_drafts — resolves to that draft's original email automatically" },
+        email_id: { type: 'string', description: 'The Gmail message ID, if known directly (not needed if draft_id is given)' },
+        account: { type: 'string', enum: ['personal', 'asu'], description: 'Which inbox, if using email_id directly' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'send_draft',
     description: 'Approve and send a pending email draft. Use this whenever the user asks to send/approve a draft in natural conversation, not just via the exact word "approve".',
     input_schema: {
