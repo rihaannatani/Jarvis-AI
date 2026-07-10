@@ -1,6 +1,7 @@
 'use strict';
 const logger = require('./logger');
 const state = require('./state');
+const { phoenixToday, phoenixTodayStr } = require('./date-utils');
 
 async function execute(toolName, toolInput, chatId) {
   logger.info(`[router] Executing tool: ${toolName}`);
@@ -77,6 +78,28 @@ async function execute(toolName, toolInput, chatId) {
       state.saveReminder(chatId, message, fireDate.toISOString());
       logger.info(`[router] Reminder set: "${message}" at ${fire_at}`);
       return { success: true, scheduledFor: fire_at };
+    }
+
+    case 'set_location_reminder': {
+      const { message, trigger_event, place_label } = toolInput;
+      if (!message || !trigger_event) return { error: 'message and trigger_event are required' };
+      const id = state.saveLocationReminder({
+        chatId,
+        message,
+        triggerEvent: trigger_event,
+        placeLabel: place_label ? String(place_label).toLowerCase().trim() : null,
+      });
+      logger.info(`[router] Location reminder #${id} set: "${message}" on ${trigger_event}${place_label ? ` @ ${place_label}` : ''}`);
+      return { success: true, id, trigger_event, place_label: place_label || null };
+    }
+
+    case 'list_location_reminders': {
+      return { reminders: state.listPendingLocationReminders(chatId) };
+    }
+
+    case 'cancel_location_reminder': {
+      state.cancelLocationReminder(toolInput.reminder_id);
+      return { success: true };
     }
 
     case 'get_pending_drafts': {
@@ -172,8 +195,7 @@ async function execute(toolName, toolInput, chatId) {
     case 'get_pantry': {
       const filter = toolInput.filter || 'all';
       const items = state.getActivePantryItems();
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = phoenixToday();
 
       let filtered = items;
       if (filter === 'expiring_soon') {
@@ -219,7 +241,7 @@ async function execute(toolName, toolInput, chatId) {
     case 'add_pantry_item': {
       const { name, expiry_date, storage_location, category, notes } = toolInput;
       if (!name) return { error: 'name is required' };
-      const today = new Date().toISOString().slice(0, 10);
+      const today = phoenixTodayStr();
       const id = state.addPantryItem({
         name,
         category: category || 'pantry',

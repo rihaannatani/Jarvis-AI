@@ -2,14 +2,15 @@
 const axios = require('axios');
 const config = require('../config');
 const logger = require('../logger');
+const { withResilience } = require('./api-utils');
 
 const BASE = 'https://api.openweathermap.org/data/2.5';
 
 async function getCurrentWeather() {
   const { apiKey, lat, lon, units } = config.weather;
-  const res = await axios.get(`${BASE}/weather`, {
-    params: { lat, lon, appid: apiKey, units },
-  });
+  const res = await withResilience('weather', () =>
+    axios.get(`${BASE}/weather`, { params: { lat, lon, appid: apiKey, units } })
+  );
   const d = res.data;
   return {
     description: d.weather[0].description,
@@ -23,9 +24,9 @@ async function getCurrentWeather() {
 
 async function getTodayForecast() {
   const { apiKey, lat, lon, units } = config.weather;
-  const res = await axios.get(`${BASE}/forecast`, {
-    params: { lat, lon, appid: apiKey, units, cnt: 8 },
-  });
+  const res = await withResilience('weather', () =>
+    axios.get(`${BASE}/forecast`, { params: { lat, lon, appid: apiKey, units, cnt: 8 } })
+  );
   const entries = res.data.list;
   const temps = entries.map((e) => e.main.temp);
   const descriptions = entries.map((e) => e.weather[0].description);
@@ -39,9 +40,9 @@ async function getTodayForecast() {
 
 async function getWeekForecast() {
   const { apiKey, lat, lon, units } = config.weather;
-  const res = await axios.get(`${BASE}/forecast`, {
-    params: { lat, lon, appid: apiKey, units, cnt: 40 },
-  });
+  const res = await withResilience('weather', () =>
+    axios.get(`${BASE}/forecast`, { params: { lat, lon, appid: apiKey, units, cnt: 40 } })
+  );
 
   const byDay = {};
   for (const entry of res.data.list) {

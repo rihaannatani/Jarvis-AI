@@ -109,6 +109,10 @@ async function runWorkdayWatcher(sendFn, sendWithButtons) {
   }
 }
 
+// Generates cover letters and holds everything for review — does NOT submit
+// anything. Submitting a real job application is irreversible and
+// employer-facing, so it gets the same human-in-the-loop gate email replies
+// already have; this used to skip straight to applyToJob() with no preview.
 async function handleApply(indices, sendFn) {
   const pendingRaw = state.getSetting('workday_pending_jobs');
   if (!pendingRaw) {
@@ -124,21 +128,53 @@ async function handleApply(indices, sendFn) {
     return;
   }
 
-  await sendFn(`🤖 Generating cover letters and applying to ${toApply.length} job(s)...`);
+  await sendFn(`📝 Generating cover letters for ${toApply.length} job(s) — review before anything gets submitted...`);
+
+  const prepared = [];
+  for (const job of toApply) {
+    try {
+      const coverLetter = await generateCoverLetter(job.title, job.url);
+      prepared.push({ job, coverLetter });
+      await sendFn(`📄 *${job.title}*\n\n${coverLetter}`);
+    } catch (err) {
+      logger.error(`[workday-watcher] Cover letter generation failed for ${job.title}:`, err.message);
+      await sendFn(`⚠️ Couldn't generate a cover letter for *${job.title}* — skipping it.`);
+    }
+  }
+
+  if (!prepared.length) {
+    await sendFn('Nothing to submit.');
+    state.setSetting('workday_pending_jobs', '');
+    return;
+  }
+
+  state.setSetting('workday_prepared_applications', JSON.stringify(prepared));
+  await sendFn(
+    `Reply *confirm apply* to actually submit ${prepared.length} application${prepared.length !== 1 ? 's' : ''} with your resume + these cover letters, or *cancel apply* to discard.`
+  );
+}
+
+// Actually submits — only reachable after handleApply's review step.
+async function handleConfirmApply(sendFn) {
+  const raw = state.getSetting('workday_prepared_applications');
+  if (!raw) {
+    await sendFn('Nothing pending to confirm. Send `scan jobs` to start.');
+    return;
+  }
+  const prepared = JSON.parse(raw);
+  state.setSetting('workday_prepared_applications', '');
+  state.setSetting('workday_pending_jobs', '');
 
   const results = [];
 
-  for (const job of toApply) {
+  for (const { job, coverLetter } of prepared) {
     try {
-      await sendFn(`📝 Generating cover letter for: *${job.title}*`);
-      const coverLetter = await generateCoverLetter(job.title, job.url);
-
       const clPath = path.join(os.tmpdir(), `cover_letter_${Date.now()}.txt`);
       fs.writeFileSync(clPath, coverLetter, 'utf8');
 
       if (!fs.existsSync(RESUME_PATH)) {
         await sendFn(
-          `⚠️ Resume not found at \`${RESUME_PATH}\`\n\nUpload it with:\n\`\`\`\ngcloud compute scp resume.pdf jarvis:~/Jarvis-AI/data/resume.pdf --zone=us-central1-a\n\`\`\`\n\n📄 *Cover letter for ${job.title}:*\n\n${coverLetter}`
+          `⚠️ Resume not found at \`${RESUME_PATH}\` — can't auto-apply to *${job.title}*.\n\nUpload it with:\n\`\`\`\ngcloud compute scp resume.pdf jarvis:~/Jarvis-AI/data/resume.pdf --zone=us-central1-a\n\`\`\`\n\nApply manually meanwhile: ${job.url}`
         );
         results.push({ job, success: false, reason: 'no_resume' });
         continue;
@@ -175,7 +211,13 @@ async function handleApply(indices, sendFn) {
   const succeeded = results.filter((r) => r.success).length;
   const failed = results.length - succeeded;
   await sendFn(`📊 *Done!*\n✅ Applied: ${succeeded}\n⚠️ Manual needed: ${failed}\n\nGood luck! 🍀`);
-  state.setSetting('workday_pending_jobs', '');
 }
 
-module.exports = { runWorkdayWatcher, handleApply };
+async function handleCancelApply(sendFn) {
+  const had = state.getSetting('workday_prepared_applications');
+  state.setSetting('workday_prepared_applications', '');
+  state.setSetting('workday_pending_jobs', '');
+  await sendFn(had ? 'Cancelled — nothing was submitted.' : 'Nothing pending to cancel.');
+}
+
+module.exports = { runWorkdayWatcher, handleApply, handleConfirmApply, handleCancelApply };

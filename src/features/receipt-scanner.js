@@ -3,6 +3,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const config = require('../config');
 const logger = require('../logger');
 const state = require('../state');
+const { phoenixToday, phoenixTodayStr } = require('../date-utils');
 
 const MODEL = config.anthropic.model;
 
@@ -25,10 +26,6 @@ const CATEGORY_EMOJI = {
 
 const CATEGORY_ORDER = ['produce', 'dairy', 'meat', 'seafood', 'frozen', 'eggs', 'bread', 'leftovers', 'snacks', 'drinks', 'pantry', 'household'];
 
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function formatDisplayDate(isoDate) {
   if (!isoDate) return 'unknown';
   const d = new Date(isoDate + 'T12:00:00');
@@ -37,8 +34,7 @@ function formatDisplayDate(isoDate) {
 
 function daysUntil(isoDate) {
   if (!isoDate) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = phoenixToday();
   const expiry = new Date(isoDate + 'T00:00:00');
   return Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
 }
@@ -96,7 +92,7 @@ function buildSummaryMessage(items, purchaseDate, usedFallback) {
 }
 
 async function processReceiptImage(base64Image, caption = '') {
-  const today = todayStr();
+  const today = phoenixTodayStr();
 
   const prompt = `This is a grocery/shopping receipt. First, find the transaction date printed on the receipt itself (near the top or bottom, often next to a time stamp or store info) — this is the actual purchase date, which may NOT be today.
 

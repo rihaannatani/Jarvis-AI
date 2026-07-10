@@ -3,6 +3,7 @@ const axios = require('axios');
 const config = require('../config');
 const logger = require('../logger');
 const state = require('../state');
+const { withResilience } = require('./api-utils');
 
 const BASE = 'https://maps.googleapis.com/maps/api';
 
@@ -44,9 +45,9 @@ async function resolveLocation(query) {
 
   // Fall back to Places Text Search to resolve casual names to full addresses
   try {
-    const res = await axios.get(`${BASE}/place/textsearch/json`, {
-      params: { query, key: apiKey() },
-    });
+    const res = await withResilience('maps', () =>
+      axios.get(`${BASE}/place/textsearch/json`, { params: { query, key: apiKey() } })
+    );
     if (res.data.results?.length) {
       const resolved = res.data.results[0].formatted_address;
       logger.info(`[maps] Resolved "${query}" → Places API: ${resolved}`);
@@ -84,7 +85,7 @@ async function getTravelTime(destination, origin, mode = 'driving') {
       if (mode === 'driving') params.traffic_model = 'best_guess';
     }
 
-    const res = await axios.get(`${BASE}/distancematrix/json`, { params });
+    const res = await withResilience('maps', () => axios.get(`${BASE}/distancematrix/json`, { params }));
     const el = res.data.rows?.[0]?.elements?.[0];
 
     if (!el || el.status !== 'OK') {
@@ -117,7 +118,7 @@ async function findNearbyPlaces(query, location) {
       key: apiKey(),
     };
 
-    const res = await axios.get(`${BASE}/place/textsearch/json`, { params });
+    const res = await withResilience('maps', () => axios.get(`${BASE}/place/textsearch/json`, { params }));
 
     if (res.data.status !== 'OK' && res.data.status !== 'ZERO_RESULTS') {
       throw new Error(`Places API returned status: ${res.data.status}`);
@@ -160,7 +161,7 @@ async function getDirections(destination, origin, mode = 'driving') {
       params.departure_time = 'now';
     }
 
-    const res = await axios.get(`${BASE}/directions/json`, { params });
+    const res = await withResilience('maps', () => axios.get(`${BASE}/directions/json`, { params }));
 
     if (res.data.status !== 'OK') {
       throw new Error(`Directions API returned status: ${res.data.status}`);

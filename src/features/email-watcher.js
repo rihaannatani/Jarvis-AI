@@ -170,10 +170,15 @@ async function checkNewEmails(sendAlertFn) {
       `[email-watcher] [${action}] score=${score}${ccTag} "${email.subject}" from ${email.from} (${email.account}) | ${reason}`
     );
 
-    state.markEmailSeen(email.id);
-
     if (score >= IMPORTANCE_THRESHOLD) {
+      // Don't mark seen yet — only after the alert actually sends below, so
+      // a Telegram failure gets retried next poll instead of the email
+      // silently never being surfaced. Low-score emails are a final
+      // decision either way, so mark those seen now to avoid re-scoring
+      // them (and re-spending tokens) on every future poll.
       importantEmails.push({ ...email, score, reason, needsDraft: true });
+    } else {
+      state.markEmailSeen(email.id);
     }
   }
 
@@ -185,8 +190,9 @@ async function checkNewEmails(sendAlertFn) {
     try {
       logger.info(`[email-watcher] Sending alert for: "${email.subject}"`);
       await processImportantEmail(email, sendAlertFn);
+      state.markEmailSeen(email.id);
     } catch (err) {
-      logger.error(`[email-watcher] Failed to process email ${email.id}:`, err.message, err.stack);
+      logger.error(`[email-watcher] Failed to process email ${email.id} (will retry next poll):`, err.message, err.stack);
     }
   }
 }
@@ -207,9 +213,12 @@ async function processImportantEmail(email, sendAlertFn) {
 
   if (!email.needsDraft) return;
 
-  // Get full body for drafting
+  // getRecentEmails truncates body to 1000 chars — re-fetch the untruncated
+  // version whenever that truncation may have actually cut content off, not
+  // just when the body looks suspiciously short (almost no real email is
+  // under 100 chars, so that check was effectively never firing).
   let fullEmail = email;
-  if (!email.body || email.body.length < 100) {
+  if (!email.body || email.body.length >= 1000) {
     try {
       const { getEmailContent } = require('../integrations/gmail');
       fullEmail = await getEmailContent(email.id, email.account || 'personal');

@@ -68,6 +68,42 @@ const TOOLS = [
     },
   },
   {
+    name: 'set_location_reminder',
+    description: 'Set a reminder that fires on the next matching location/motion event instead of a specific time — e.g. "remind me when I leave home", "remind me next time I\'m driving", "remind me when I get to campus". Requires the phone-side automation (Tasker/Shortcuts) to be set up and pushing events; if unsure whether it is, mention that when confirming.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message: { type: 'string', description: 'The reminder message to send' },
+        trigger_event: {
+          type: 'string',
+          enum: ['arrived', 'left', 'driving_start', 'driving_stop'],
+          description: 'arrived/left = a specific place; driving_start/driving_stop = motion, not tied to a place',
+        },
+        place_label: {
+          type: 'string',
+          description: 'Place name for arrived/left (e.g. "home", "work", "campus") — must match what the phone automation reports. Omit entirely for driving_start/driving_stop or for "next time, anywhere".',
+        },
+      },
+      required: ['message', 'trigger_event'],
+    },
+  },
+  {
+    name: 'list_location_reminders',
+    description: 'List currently pending location-triggered reminders',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'cancel_location_reminder',
+    description: 'Cancel a pending location-triggered reminder by ID',
+    input_schema: {
+      type: 'object',
+      properties: {
+        reminder_id: { type: 'number', description: 'The location reminder ID' },
+      },
+      required: ['reminder_id'],
+    },
+  },
+  {
     name: 'create_calendar_event',
     description: "Create a new event on the user's Google Calendar",
     input_schema: {

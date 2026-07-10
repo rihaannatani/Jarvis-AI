@@ -4,6 +4,29 @@ const state = require('../state');
 const { getAssignments, getAnnouncements } = require('../integrations/canvas');
 const { quickComplete } = require('../claude');
 const { announcementInferencePrompt, assignmentInferencePrompt } = require('../prompts/canvas');
+const { toPhoenixNaiveIso } = require('../date-utils');
+
+// Adds a short 30-minute deadline block ending exactly at the due time —
+// deliberately not an all-day event (that was the original complaint: Canvas
+// due dates syncing as all-day events aren't useful for actually planning
+// around). Best-effort: a calendar failure here should never block the
+// Telegram alert or bubble up to the caller.
+async function addAssignmentToCalendar(assignment) {
+  const { createEvent } = require('../integrations/calendar');
+  const due = new Date(assignment.dueAt);
+  const start = toPhoenixNaiveIso(new Date(due.getTime() - 30 * 60 * 1000));
+  const end = toPhoenixNaiveIso(due);
+  const pointsStr = assignment.pointsPossible != null ? ` (${assignment.pointsPossible} pts)` : '';
+  await createEvent(
+    {
+      summary: `📚 Due: ${assignment.name}${pointsStr}`,
+      start,
+      end,
+      description: `${assignment.course}${assignment.htmlUrl ? `\n${assignment.htmlUrl}` : ''}`,
+    },
+    'asu'
+  );
+}
 
 function formatDue(dueAt) {
   return new Date(dueAt).toLocaleString('en-US', {
@@ -100,33 +123,45 @@ async function checkAnnouncements(shouldAlert, sendFn) {
   for (const ann of announcements) {
     const seen = state.isAnnouncementSeen(String(ann.id));
     if (seen) continue;
-    state.markAnnouncementSeen(String(ann.id), ann.course);
 
-    if (!shouldAlert) continue;
+    // Silent seed/no-alert mode — nothing gets sent, so mark seen immediately.
+    if (!shouldAlert) {
+      state.markAnnouncementSeen(String(ann.id), ann.course);
+      continue;
+    }
 
     const inference = await inferAnnouncement(ann);
 
-    // Inference unavailable — fall back to the old behavior so nothing gets silently dropped
+    let msg = null;
     if (!inference) {
+      // Inference unavailable — fall back to the old behavior so nothing gets silently dropped
       const preview = firstSentences(ann.message, 3);
-      const msg =
+      msg =
         `📢 *New Announcement — ${ann.course}*\n*${ann.title}*\n\n${preview}\n\n` +
         `_Ask me for the full announcement if you need it._`;
-      await sendFn(msg).catch((err) => logger.error('[canvas-watcher] Failed to send announcement alert:', err.message));
-      continue;
+    } else if (inference.matters) {
+      const urgencyTag = inference.urgency >= 8 ? '🔴' : inference.urgency >= 5 ? '🟡' : '';
+      const actionLine = inference.actionNeeded ? `\n\n*Action needed:* ${inference.actionNeeded}` : '';
+      msg = `📢 ${urgencyTag} *${ann.course}* — ${ann.title}\n\n${inference.summary}${actionLine}`;
     }
 
-    if (!inference.matters) {
+    if (!msg) {
+      // Deliberately not alerting (routine) — nothing to retry, safe to mark seen.
       logger.info(`[canvas-watcher] Skip (routine): announcement "${ann.title}" (${ann.course})`);
+      state.markAnnouncementSeen(String(ann.id), ann.course);
       continue;
     }
 
-    const urgencyTag = inference.urgency >= 8 ? '🔴' : inference.urgency >= 5 ? '🟡' : '';
-    const actionLine = inference.actionNeeded ? `\n\n*Action needed:* ${inference.actionNeeded}` : '';
-    const msg =
-      `📢 ${urgencyTag} *${ann.course}* — ${ann.title}\n\n${inference.summary}${actionLine}`;
-    await sendFn(msg).catch((err) => logger.error('[canvas-watcher] Failed to send announcement alert:', err.message));
-    logger.info(`[canvas-watcher] Alerted (urgency ${inference.urgency}): announcement "${ann.title}" (${ann.course})`);
+    // Only mark seen once the alert actually went out — a failed send
+    // (Telegram hiccup) leaves it unseen so it's retried next poll instead
+    // of being silently and permanently dropped.
+    try {
+      await sendFn(msg);
+      state.markAnnouncementSeen(String(ann.id), ann.course);
+      logger.info(`[canvas-watcher] Alerted${inference ? ` (urgency ${inference.urgency})` : ''}: announcement "${ann.title}" (${ann.course})`);
+    } catch (err) {
+      logger.error('[canvas-watcher] Failed to send announcement alert (will retry next poll):', err.message);
+    }
   }
 }
 
@@ -144,9 +179,11 @@ async function checkAssignments(shouldAlert, sendFn) {
     const existing = state.getSeenAssignment(id);
 
     if (!existing) {
-      // New assignment
-      state.markAssignmentSeen(id, String(assignment.courseCode || ''), assignment.dueAt || '');
-      if (!shouldAlert) continue;
+      // New assignment. Silent mode — record and move on, nothing to send.
+      if (!shouldAlert) {
+        state.markAssignmentSeen(id, String(assignment.courseCode || ''), assignment.dueAt || '');
+        continue;
+      }
 
       const nearbyDeadlines = assignments
         .filter((a) => a.id !== assignment.id && a.dueAt && Math.abs(new Date(a.dueAt) - new Date(assignment.dueAt)) < 3 * 24 * 60 * 60 * 1000)
@@ -159,18 +196,46 @@ async function checkAssignments(shouldAlert, sendFn) {
 
       const msg =
         `📝 *New Assignment — ${assignment.course}*\n*${assignment.name}*\nDue: ${formatDue(assignment.dueAt)}${pointsStr}${noteLine}`;
-      await sendFn(msg).catch((err) => logger.error('[canvas-watcher] Failed to send new assignment alert:', err.message));
-      logger.info(`[canvas-watcher] Alerted: new assignment "${assignment.name}"${inference?.noteworthy ? ' [flagged]' : ''}`);
+
+      // Record seen only after a successful send — a delivery failure is
+      // retried on the next poll instead of being lost for good. Calendar
+      // add happens right alongside that (not before), so a retry after a
+      // failed send can't create the same event twice.
+      try {
+        await sendFn(msg);
+        state.markAssignmentSeen(id, String(assignment.courseCode || ''), assignment.dueAt || '');
+        logger.info(`[canvas-watcher] Alerted: new assignment "${assignment.name}"${inference?.noteworthy ? ' [flagged]' : ''}`);
+      } catch (err) {
+        logger.error('[canvas-watcher] Failed to send new assignment alert (will retry next poll):', err.message);
+        continue;
+      }
+
+      if (assignment.dueAt) {
+        try {
+          await addAssignmentToCalendar(assignment);
+          logger.info(`[canvas-watcher] Added "${assignment.name}" to ASU calendar`);
+        } catch (err) {
+          logger.warn(`[canvas-watcher] Failed to add "${assignment.name}" to calendar:`, err.message);
+        }
+      }
     } else if (existing.due_at && assignment.dueAt && existing.due_at !== assignment.dueAt) {
       // Due date changed
-      const oldDue = existing.due_at;
-      state.updateAssignmentDueAt(id, assignment.dueAt);
-      if (!shouldAlert) continue;
+      if (!shouldAlert) {
+        state.updateAssignmentDueAt(id, assignment.dueAt);
+        continue;
+      }
 
+      const oldDue = existing.due_at;
       const msg =
         `⚠️ *Due Date Changed — ${assignment.course}*\n*${assignment.name}*\nOld due: ${formatDue(oldDue)}\nNew due: ${formatDue(assignment.dueAt)}`;
-      await sendFn(msg).catch((err) => logger.error('[canvas-watcher] Failed to send due date change alert:', err.message));
-      logger.info(`[canvas-watcher] Alerted: due date changed for "${assignment.name}"`);
+
+      try {
+        await sendFn(msg);
+        state.updateAssignmentDueAt(id, assignment.dueAt);
+        logger.info(`[canvas-watcher] Alerted: due date changed for "${assignment.name}"`);
+      } catch (err) {
+        logger.error('[canvas-watcher] Failed to send due date change alert (will retry next poll):', err.message);
+      }
     }
   }
 }

@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const config = require('./config');
 const logger = require('./logger');
+const { phoenixTodayStr } = require('./date-utils');
 
 const dbPathRaw = config.app.dbPath;
 const DB_PATH = dbPathRaw === ':memory:' ? ':memory:' : path.resolve(process.cwd(), dbPathRaw);
@@ -162,6 +163,17 @@ db.exec(`
     alert_type TEXT,
     sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS location_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_chat_id TEXT NOT NULL,
+    message TEXT NOT NULL,
+    trigger_event TEXT NOT NULL,
+    place_label TEXT,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'fired', 'cancelled')),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fired_at DATETIME
+  );
 `);
 
 // Migrations for existing DBs
@@ -279,6 +291,49 @@ function getDueReminders() {
 
 function markReminderFired(reminderId) {
   db.prepare(`UPDATE reminders SET fired = 1 WHERE id = ?`).run(reminderId);
+}
+
+// ─── Location-reminder helpers ────────────────────────────────────────────────
+// Fire on the next matching phone-side event (arrived/left/driving_start/
+// driving_stop) instead of a specific time — see webhook-server.js.
+
+function saveLocationReminder({ chatId, message, triggerEvent, placeLabel }) {
+  const result = db
+    .prepare(
+      `INSERT INTO location_reminders (telegram_chat_id, message, trigger_event, place_label)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(String(chatId), message, triggerEvent, placeLabel || null);
+  return result.lastInsertRowid;
+}
+
+// place_label NULL on a reminder means "any place" — matches every event of
+// that trigger_event type regardless of what place (if any) the event named.
+function getPendingLocationReminders(triggerEvent, placeLabel) {
+  return db
+    .prepare(
+      `SELECT * FROM location_reminders
+       WHERE status = 'pending' AND trigger_event = ?
+         AND (place_label IS NULL OR place_label = ?)`
+    )
+    .all(triggerEvent, placeLabel || null);
+}
+
+function listPendingLocationReminders(chatId) {
+  return db
+    .prepare(
+      `SELECT * FROM location_reminders WHERE telegram_chat_id = ? AND status = 'pending'
+       ORDER BY created_at DESC`
+    )
+    .all(String(chatId));
+}
+
+function markLocationReminderFired(id) {
+  db.prepare(`UPDATE location_reminders SET status = 'fired', fired_at = datetime('now') WHERE id = ?`).run(id);
+}
+
+function cancelLocationReminder(id) {
+  db.prepare(`UPDATE location_reminders SET status = 'cancelled' WHERE id = ?`).run(id);
 }
 
 // ─── Settings helpers ─────────────────────────────────────────────────────────
@@ -498,10 +553,10 @@ function markExpiryAlertSent(pantryItemId, alertType) {
 }
 
 function getExpiringPantryItems(withinDays) {
-  const cutoff = new Date();
+  const cutoff = new Date(`${phoenixTodayStr()}T00:00:00`);
   cutoff.setDate(cutoff.getDate() + withinDays);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const cutoffStr = cutoff.toLocaleDateString('en-CA');
+  const todayStr = phoenixTodayStr();
   return db.prepare(
     `SELECT * FROM pantry_items
      WHERE consumed = 0
@@ -537,6 +592,11 @@ module.exports = {
   saveReminder,
   getDueReminders,
   markReminderFired,
+  saveLocationReminder,
+  getPendingLocationReminders,
+  listPendingLocationReminders,
+  markLocationReminderFired,
+  cancelLocationReminder,
   getSetting,
   setSetting,
   isAnnouncementSeen,

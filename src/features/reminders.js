@@ -2,6 +2,7 @@
 const logger = require('../logger');
 const state = require('../state');
 const config = require('../config');
+const { phoenixTodayStr } = require('../date-utils');
 
 async function checkReminders(sendFn) {
   const due = state.getDueReminders();
@@ -91,6 +92,10 @@ async function checkAssignmentReminders(sendFn) {
     const assignments = await getAssignments();
     const chatId = config.telegram.myChatId;
     const now = Date.now();
+    const nowPhxHour = Number(
+      new Date().toLocaleString('en-US', { timeZone: 'America/Phoenix', hour: 'numeric', hour12: false })
+    );
+    const todayPhx = phoenixTodayStr();
 
     for (const assignment of assignments) {
       const dueTime = new Date(assignment.dueAt).getTime();
@@ -101,6 +106,20 @@ async function checkAssignmentReminders(sendFn) {
         if (!state.getSetting(key)) {
           await sendFn(chatId, `📚 *24-hour reminder:* "${assignment.name}" (${assignment.courseCode}) is due tomorrow`);
           state.setSetting(key, 'sent');
+        }
+      }
+
+      // Same-day evening reminder — fires once, ~6-7pm Phoenix time, on the
+      // calendar day something is actually due. A last heads-up between the
+      // 24-hour and 1-hour ones, distinct from either.
+      if (hoursUntil > 0 && nowPhxHour === 18) {
+        const dueDayPhx = new Date(assignment.dueAt).toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' });
+        if (dueDayPhx === todayPhx) {
+          const key = `canvas_evening_${assignment.id}`;
+          if (!state.getSetting(key)) {
+            await sendFn(chatId, `🌆 *Due tonight:* "${assignment.name}" (${assignment.courseCode}) — don't let the evening slip by`);
+            state.setSetting(key, 'sent');
+          }
         }
       }
 

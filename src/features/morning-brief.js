@@ -4,6 +4,7 @@ const { complete } = require('../claude');
 const config = require('../config');
 const state = require('../state');
 const { morningBriefPrompt } = require('../prompts/brief');
+const { phoenixToday } = require('../date-utils');
 
 async function enrichEventsWithTravel(events) {
   if (!config.maps.apiKey || !events?.length) return events;
@@ -64,8 +65,7 @@ function buildExpiringSoonSection() {
     const items = state.getExpiringPantryItems(3);
     if (!items.length) return null;
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = phoenixToday();
 
     const lines = ['🥗 *Use soon:*'];
     for (const item of items) {

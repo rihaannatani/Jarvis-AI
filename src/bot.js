@@ -7,8 +7,9 @@ const claude = require('./claude');
 const { handleDraftAction } = require('./features/draft-flow');
 const scheduler = require('./scheduler');
 const state = require('./state');
-const { handleApply, runWorkdayWatcher } = require('./features/workday-watcher');
+const { handleApply, handleConfirmApply, handleCancelApply, runWorkdayWatcher } = require('./features/workday-watcher');
 const { processReceiptImage } = require('./features/receipt-scanner');
+const { phoenixToday } = require('./date-utils');
 
 const MY_CHAT_ID = config.telegram.myChatId;
 
@@ -60,7 +61,7 @@ function formatTaskDue(dueDate) {
   if (!dueDate) return '';
   const d = new Date(dueDate.length <= 10 ? `${dueDate}T00:00:00` : dueDate);
   if (isNaN(d)) return '';
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const today = phoenixToday();
   const days = Math.round((d - today) / (1000 * 60 * 60 * 24));
   const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   if (days < 0) return ` — ⚠️ overdue (${dateStr})`;
@@ -139,7 +140,18 @@ function init() {
       return;
     }
 
-    if (!text) return;
+    if (!text) {
+      // node-telegram-bot-api fires 'message' for every update type; photos
+      // are handled by the dedicated 'photo' listener below, so anything
+      // else with no text (documents, voice notes, videos, stickers) would
+      // otherwise get silently dropped with zero feedback to the user.
+      if (!msg.photo) {
+        const kind = msg.document ? 'a file' : msg.voice ? 'a voice note' : msg.video ? 'a video'
+          : msg.sticker ? 'a sticker' : msg.video_note ? 'a video note' : msg.audio ? 'audio' : 'that';
+        await sendSafe(bot, chatId, `I can't do anything with ${kind} yet — text or a photo of a receipt works though.`).catch(() => {});
+      }
+      return;
+    }
 
     logger.info(`[bot] Message from ${chatId}: ${text.slice(0, 80)}`);
 
@@ -162,27 +174,40 @@ function init() {
       const handled = await handleDraftAction(chatId, text, (t) => sendSafe(bot, chatId, t));
       if (handled) return;
 
-      // ── Workday: apply command ────────────────────────────────────────────
-      if (/^apply\s+(all|\d[\d,\s]*)$/i.test(text)) {
-        const arg = text.replace(/^apply\s+/i, '').trim();
-        const indices = arg.toLowerCase() === 'all'
-          ? 'all'
-          : arg.split(',').map((n) => parseInt(n.trim()) - 1).filter((n) => !isNaN(n));
-        await handleApply(indices, (t) => sendSafe(bot, chatId, t));
-        return;
-      }
+      // ── Workday: job scan/apply commands (disabled — see config.workday.enabled) ──
+      if (config.workday.enabled) {
+        // Apply command (generates cover letters for review only)
+        if (/^apply\s+(all|\d[\d,\s]*)$/i.test(text)) {
+          const arg = text.replace(/^apply\s+/i, '').trim();
+          const indices = arg.toLowerCase() === 'all'
+            ? 'all'
+            : arg.split(',').map((n) => parseInt(n.trim()) - 1).filter((n) => !isNaN(n));
+          await handleApply(indices, (t) => sendSafe(bot, chatId, t));
+          return;
+        }
 
-      // ── Workday: manual scan trigger ──────────────────────────────────────
-      if (/^(scan jobs|check jobs|workday)$/i.test(text)) {
-        await sendSafe(bot, chatId, '🔍 Scanning ASU Workday for new jobs...');
-        await runWorkdayWatcher(
-          (t) => sendSafe(bot, chatId, t),
-          (t, buttons) => bot.sendMessage(chatId, t, {
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: buttons },
-          })
-        );
-        return;
+        // Confirm/cancel the actual submission
+        if (/^confirm\s+apply$/i.test(text)) {
+          await handleConfirmApply((t) => sendSafe(bot, chatId, t));
+          return;
+        }
+        if (/^cancel\s+apply$/i.test(text)) {
+          await handleCancelApply((t) => sendSafe(bot, chatId, t));
+          return;
+        }
+
+        // Manual scan trigger
+        if (/^(scan jobs|check jobs|workday)$/i.test(text)) {
+          await sendSafe(bot, chatId, '🔍 Scanning ASU Workday for new jobs...');
+          await runWorkdayWatcher(
+            (t) => sendSafe(bot, chatId, t),
+            (t, buttons) => bot.sendMessage(chatId, t, {
+              parse_mode: 'Markdown',
+              reply_markup: { inline_keyboard: buttons },
+            })
+          );
+          return;
+        }
       }
 
       // Otherwise route to Claude

@@ -36,6 +36,11 @@ const config = {
   teams: {
     enabled: process.env.TEAMS_ENABLED === 'true',
   },
+  workday: {
+    // Off by default — a separate external automation already handles job
+    // applications; this in-app watcher/apply flow is dormant until re-enabled.
+    enabled: process.env.WORKDAY_ENABLED === 'true',
+  },
   weather: {
     apiKey: process.env.OPENWEATHERMAP_API_KEY,
     lat: process.env.WEATHER_LAT || '33.4484',
@@ -45,6 +50,12 @@ const config = {
   maps: {
     apiKey: process.env.GOOGLE_MAPS_API_KEY || '',
     homeAddress: process.env.HOME_ADDRESS || '1260 E University Dr, Tempe, AZ 85281',
+  },
+  webhook: {
+    // Shared secret Tasker/Shortcuts must send with every location event —
+    // the endpoint is only as safe as this being long and unguessable.
+    secret: process.env.WEBHOOK_SECRET || '',
+    enabled: process.env.WEBHOOK_ENABLED === 'true',
   },
   myEmails: [
     process.env.PERSONAL_EMAIL || '',

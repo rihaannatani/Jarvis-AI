@@ -55,6 +55,12 @@ async function main() {
   const scheduler = require('./scheduler');
   scheduler.init();
 
+  // Start webhook server (disabled unless WEBHOOK_ENABLED=true) — receives
+  // location/motion events pushed from a phone-side automation.
+  const webhookServer = require('./webhook-server');
+  webhookServer.setSendFn(scheduler.safeSend);
+  webhookServer.init();
+
   logger.info('[main] Jarvis is online and ready');
 
   process.on('SIGINT', () => {
@@ -67,8 +73,14 @@ async function main() {
     process.exit(0);
   });
 
+  // After an uncaught exception the process is in an unknown state — log it
+  // and exit so PM2 restarts clean, rather than limping along and risking
+  // silent data corruption or a stuck bot. unhandledRejection is logged only
+  // (not fatal), since a single rejected promise from e.g. a stray fetch is
+  // usually recoverable and shouldn't take the whole assistant down.
   process.on('uncaughtException', (err) => {
-    logger.error('[main] Uncaught exception:', err);
+    logger.error('[main] Uncaught exception — exiting for a clean restart:', err);
+    process.exit(1);
   });
 
   process.on('unhandledRejection', (reason) => {
