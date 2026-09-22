@@ -1,5 +1,5 @@
 'use strict';
-const { DatabaseSync } = require('node:sqlite');
+const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
@@ -14,7 +14,7 @@ if (DB_PATH !== ':memory:') {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 }
 
-const db = new DatabaseSync(DB_PATH);
+const db = new Database(DB_PATH);
 
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
