@@ -174,6 +174,47 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     fired_at DATETIME
   );
+
+  CREATE TABLE IF NOT EXISTS calorie_profile (
+    id INTEGER PRIMARY KEY,
+    age INTEGER,
+    gender TEXT CHECK(gender IN ('M', 'F')),
+    height_cm INTEGER,
+    weight_kg REAL,
+    activity_level TEXT CHECK(activity_level IN ('sedentary', 'light', 'moderate', 'active', 'very_active')),
+    goal TEXT CHECK(goal IN ('lose', 'maintain', 'gain')),
+    goal_rate TEXT DEFAULT 'moderate' CHECK(goal_rate IN ('slow', 'moderate', 'aggressive')),
+    tdee_calories INTEGER,
+    daily_target INTEGER,
+    setup_complete INTEGER DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS food_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_date TEXT NOT NULL,
+    food_name TEXT NOT NULL,
+    calories INTEGER NOT NULL,
+    protein_g REAL,
+    carbs_g REAL,
+    fat_g REAL,
+    notes TEXT,
+    image_url TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS daily_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    summary_date TEXT UNIQUE NOT NULL,
+    total_calories INTEGER DEFAULT 0,
+    target_calories INTEGER,
+    protein_g REAL DEFAULT 0,
+    carbs_g REAL DEFAULT 0,
+    fat_g REAL DEFAULT 0,
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Migrations for existing DBs
@@ -567,6 +608,100 @@ function getExpiringPantryItems(withinDays) {
   ).all(todayStr, cutoffStr);
 }
 
+// ─── Calorie tracker helpers ──────────────────────────────────────────────────
+
+function saveCalorieProfile(profile) {
+  const { age, gender, heightCm, weightKg, activityLevel, goal, goalRate } = profile;
+  const tdee = calculateTDEE(age, gender, heightCm, weightKg, activityLevel);
+  const dailyTarget = calculateDailyTarget(tdee, goal, goalRate);
+  db.prepare(
+    `INSERT OR REPLACE INTO calorie_profile
+     (age, gender, height_cm, weight_kg, activity_level, goal, goal_rate, tdee_calories, daily_target, setup_complete, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))`
+  ).run(age, gender, heightCm, weightKg, activityLevel, goal, goalRate, tdee, dailyTarget);
+}
+
+function getCalorieProfile() {
+  return db.prepare(`SELECT * FROM calorie_profile WHERE id = 1`).get();
+}
+
+function addFoodLog(logDate, foodName, calories, protein, carbs, fat, notes, imageUrl) {
+  db.prepare(
+    `INSERT INTO food_logs (log_date, food_name, calories, protein_g, carbs_g, fat_g, notes, image_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(logDate, foodName, calories, protein || null, carbs || null, fat || null, notes || null, imageUrl || null);
+  updateDailySummary(logDate);
+}
+
+function getFoodLogs(logDate) {
+  return db.prepare(`SELECT * FROM food_logs WHERE log_date = ? ORDER BY created_at ASC`).all(logDate);
+}
+
+function getDailySummary(summaryDate) {
+  let summary = db.prepare(`SELECT * FROM daily_summaries WHERE summary_date = ?`).get(summaryDate);
+  if (!summary) {
+    const profile = getCalorieProfile();
+    const target = profile?.daily_target || 2000;
+    summary = {
+      summary_date: summaryDate,
+      total_calories: 0,
+      target_calories: target,
+      protein_g: 0,
+      carbs_g: 0,
+      fat_g: 0,
+    };
+  }
+  return summary;
+}
+
+function updateDailySummary(logDate) {
+  const logs = getFoodLogs(logDate);
+  const profile = getCalorieProfile();
+  const target = profile?.daily_target || 2000;
+  const totals = logs.reduce(
+    (acc, log) => ({
+      calories: acc.calories + (log.calories || 0),
+      protein: acc.protein + (log.protein_g || 0),
+      carbs: acc.carbs + (log.carbs_g || 0),
+      fat: acc.fat + (log.fat_g || 0),
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+  db.prepare(
+    `INSERT OR REPLACE INTO daily_summaries
+     (summary_date, total_calories, target_calories, protein_g, carbs_g, fat_g, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).run(logDate, totals.calories, target, totals.protein, totals.carbs, totals.fat);
+}
+
+function calculateTDEE(age, gender, heightCm, weightKg, activityLevel) {
+  // Mifflin-St Jeor equation for BMR
+  let bmr = 10 * weightKg + 6.25 * heightCm - 5 * age;
+  if (gender === 'F') bmr -= 161;
+  else bmr += 5;
+
+  const activityMultipliers = {
+    sedentary: 1.2,
+    light: 1.375,
+    moderate: 1.55,
+    active: 1.725,
+    very_active: 1.9,
+  };
+  return Math.round(bmr * (activityMultipliers[activityLevel] || 1.55));
+}
+
+function calculateDailyTarget(tdee, goal, goalRate) {
+  const rateFactors = {
+    slow: 250,
+    moderate: 500,
+    aggressive: 750,
+  };
+  const deficit = rateFactors[goalRate] || 500;
+  if (goal === 'lose') return tdee - deficit;
+  if (goal === 'gain') return tdee + deficit;
+  return tdee;
+}
+
 module.exports = {
   db,
   getMessages,
@@ -606,6 +741,14 @@ module.exports = {
   markAssignmentSeen,
   updateAssignmentDueAt,
   countSeenAssignments,
+  saveCalorieProfile,
+  getCalorieProfile,
+  addFoodLog,
+  getFoodLogs,
+  getDailySummary,
+  updateDailySummary,
+  calculateTDEE,
+  calculateDailyTarget,
   getMapsCache,
   setMapsCache,
   logApiUsage,
