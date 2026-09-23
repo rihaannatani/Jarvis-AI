@@ -355,6 +355,44 @@ const TOOLS = [
       required: ['name'],
     },
   },
+  {
+    name: 'setup_calorie_profile',
+    description: 'Set up calorie tracker with health info: age, gender, height, weight, activity level, goal, and rate of change',
+    input_schema: {
+      type: 'object',
+      properties: {
+        age: { type: 'integer', description: 'Age in years' },
+        gender: { type: 'string', enum: ['M', 'F'], description: 'Male or Female' },
+        height_cm: { type: 'integer', description: 'Height in centimeters' },
+        weight_kg: { type: 'number', description: 'Weight in kilograms' },
+        activity_level: { type: 'string', enum: ['sedentary', 'light', 'moderate', 'active', 'very_active'], description: 'Activity level' },
+        goal: { type: 'string', enum: ['lose', 'maintain', 'gain'], description: 'Goal: lose, maintain, or gain weight' },
+        goal_rate: { type: 'string', enum: ['slow', 'moderate', 'aggressive'], description: 'Rate of change' },
+      },
+      required: ['age', 'gender', 'height_cm', 'weight_kg', 'activity_level', 'goal', 'goal_rate'],
+    },
+  },
+  {
+    name: 'log_food_manual',
+    description: 'Manually log a food item with calorie and macro information',
+    input_schema: {
+      type: 'object',
+      properties: {
+        food_name: { type: 'string', description: 'Name of the food/meal' },
+        calories: { type: 'integer', description: 'Calorie count' },
+        protein_g: { type: 'number', description: 'Protein in grams (optional)' },
+        carbs_g: { type: 'number', description: 'Carbohydrates in grams (optional)' },
+        fat_g: { type: 'number', description: 'Fat in grams (optional)' },
+        notes: { type: 'string', description: 'Optional notes about portion size or preparation' },
+      },
+      required: ['food_name', 'calories'],
+    },
+  },
+  {
+    name: 'get_calorie_progress',
+    description: 'Get today\'s calorie intake progress and coaching advice',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
 ];
 
 // Keywords mapping topics to memory categories/terms for relevance filtering

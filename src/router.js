@@ -253,6 +253,43 @@ async function execute(toolName, toolInput, chatId) {
       return { success: true, id, name, expiry_date, storage_location };
     }
 
+    case 'setup_calorie_profile': {
+      const { age, gender, height_cm, weight_cm, activity_level, goal, goal_rate } = toolInput;
+      state.saveCalorieProfile({
+        age,
+        gender,
+        heightCm: height_cm,
+        weightKg: weight_cm,
+        activityLevel: activity_level,
+        goal,
+        goalRate: goal_rate,
+      });
+      const profile = state.getCalorieProfile();
+      return {
+        success: true,
+        daily_target: profile.daily_target,
+        tdee: profile.tdee_calories,
+        message: `Calorie target set to ${profile.daily_target} calories/day (TDEE: ${profile.tdee_calories})`,
+      };
+    }
+
+    case 'log_food_manual': {
+      const { food_name, calories, protein_g, carbs_g, fat_g, notes } = toolInput;
+      const today = phoenixTodayStr();
+      state.addFoodLog(today, food_name, calories, protein_g, carbs_g, fat_g, notes);
+      return {
+        success: true,
+        logged: food_name,
+        calories,
+        date: today,
+      };
+    }
+
+    case 'get_calorie_progress': {
+      const { getProgressMessage } = require('./features/calorie-tracker');
+      return { progress: getProgressMessage() };
+    }
+
     default:
       logger.warn(`[router] Unknown tool: ${toolName}`);
       return { error: `Unknown tool: ${toolName}` };
