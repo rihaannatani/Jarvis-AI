@@ -6,20 +6,43 @@ const { quickComplete } = require('../claude');
 const { announcementInferencePrompt, assignmentInferencePrompt } = require('../prompts/canvas');
 const { toPhoenixNaiveIso } = require('../date-utils');
 
-// Adds a short 30-minute deadline block ending exactly at the due time —
-// deliberately not an all-day event (that was the original complaint: Canvas
-// due dates syncing as all-day events aren't useful for actually planning
-// around). Best-effort: a calendar failure here should never block the
-// Telegram alert or bubble up to the caller.
+// Estimates time needed to complete an assignment based on points and description complexity.
+// Uses heuristics: base time + points × minutes per point + description length factor.
+// Caps at reasonable max (~8 hours for major assignments).
+function estimateAssignmentMinutes(assignment) {
+  const points = assignment.pointsPossible || 0;
+  const description = (assignment.description || '').trim();
+  const descriptionLength = description.length;
+
+  // Base: 15 min for any assignment
+  let minutes = 15;
+
+  // Points contribute: ~2-3 min per point (rough heuristic)
+  // 100 pts → ~200-300 min base, essays/projects usually take more
+  minutes += Math.ceil(points * 2.5);
+
+  // Description complexity: longer descriptions usually mean more work
+  // Every 500 chars adds ~15 min
+  minutes += Math.ceil(descriptionLength / 500) * 15;
+
+  // Cap at 8 hours (480 min) to avoid unrealistic blocks
+  return Math.min(480, minutes);
+}
+
+// Adds a calendar block with estimated duration, ending exactly at the due time.
+// Block duration is based on assignment points, description length, and submission type.
+// Best-effort: calendar failures don't block Telegram alerts.
 async function addAssignmentToCalendar(assignment) {
   const { createEvent } = require('../integrations/calendar');
   const due = new Date(assignment.dueAt);
-  const start = toPhoenixNaiveIso(new Date(due.getTime() - 30 * 60 * 1000));
+  const minutes = estimateAssignmentMinutes(assignment);
+  const start = toPhoenixNaiveIso(new Date(due.getTime() - minutes * 60 * 1000));
   const end = toPhoenixNaiveIso(due);
   const pointsStr = assignment.pointsPossible != null ? ` (${assignment.pointsPossible} pts)` : '';
+  const hoursStr = minutes >= 60 ? ` ~${Math.round(minutes / 60)}h` : ` ~${minutes}m`;
   await createEvent(
     {
-      summary: `📚 Due: ${assignment.name}${pointsStr}`,
+      summary: `📚 ${assignment.name}${pointsStr}${hoursStr}`,
       start,
       end,
       description: `${assignment.course}${assignment.htmlUrl ? `\n${assignment.htmlUrl}` : ''}`,

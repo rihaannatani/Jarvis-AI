@@ -73,6 +73,7 @@ async function getAssignments() {
               pointsPossible: a.points_possible,
               submissionTypes: a.submission_types,
               htmlUrl: a.html_url,
+              description: a.description || '',
             }));
         } catch (err) {
           logger.warn(`[canvas] getAssignments for course ${course.id} failed: ${describeError(err)}`);
