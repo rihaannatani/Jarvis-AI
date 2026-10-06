@@ -1,11 +1,10 @@
 'use strict';
 const logger = require('../logger');
-const { complete, quickComplete } = require('../claude');
+const { quickComplete } = require('../claude');
 const state = require('../state');
 const config = require('../config');
 const { getRecentEmails } = require('../integrations/gmail');
 const { hasToken } = require('../integrations/calendar');
-const { draftReplyPrompt } = require('../prompts/email');
 
 const IMPORTANCE_THRESHOLD = 7;
 
@@ -176,7 +175,7 @@ async function checkNewEmails(sendAlertFn) {
       // silently never being surfaced. Low-score emails are a final
       // decision either way, so mark those seen now to avoid re-scoring
       // them (and re-spending tokens) on every future poll.
-      importantEmails.push({ ...email, score, reason, needsDraft: true });
+      importantEmails.push({ ...email, score, reason });
     } else {
       state.markEmailSeen(email.id);
     }
@@ -189,61 +188,23 @@ async function checkNewEmails(sendAlertFn) {
   for (const email of importantEmails) {
     try {
       logger.info(`[email-watcher] Sending alert for: "${email.subject}"`);
-      await processImportantEmail(email, sendAlertFn);
+      const chatId = config.telegram.myChatId;
+      const preview = email.snippet || '(no preview)';
+      const accountTag = email.account === 'asu' ? ' (ASU)' : ' (Personal)';
+      const ccTag = isCcOnly(email) ? ' · CC' : '';
+
+      const alert =
+        `📧 *New email${accountTag}${ccTag}*\n` +
+        `*From:* ${email.from}\n` +
+        `*Subject:* ${email.subject}\n` +
+        `_${email.reason}_\n\n` +
+        preview;
+      await sendAlertFn(alert);
       state.markEmailSeen(email.id);
     } catch (err) {
-      logger.error(`[email-watcher] Failed to process email ${email.id} (will retry next poll):`, err.message, err.stack);
+      logger.error(`[email-watcher] Failed to send alert for "${email.subject}" (will retry next poll):`, err.message);
     }
   }
-}
-
-async function processImportantEmail(email, sendAlertFn) {
-  const chatId = config.telegram.myChatId;
-  const preview = email.snippet || '(no preview)';
-  const accountTag = email.account === 'asu' ? ' (ASU)' : ' (Personal)';
-  const ccTag = isCcOnly(email) ? ' · CC' : '';
-
-  const alert =
-    `📧 *New email${accountTag}${ccTag}*\n` +
-    `*From:* ${email.from}\n` +
-    `*Subject:* ${email.subject}\n` +
-    `_${email.reason}_\n\n` +
-    preview;
-  await sendAlertFn(alert);
-
-  if (!email.needsDraft) return;
-
-  // getRecentEmails truncates body to 1000 chars — re-fetch the untruncated
-  // version whenever that truncation may have actually cut content off, not
-  // just when the body looks suspiciously short (almost no real email is
-  // under 100 chars, so that check was effectively never firing).
-  let fullEmail = email;
-  if (!email.body || email.body.length >= 1000) {
-    try {
-      const { getEmailContent } = require('../integrations/gmail');
-      fullEmail = await getEmailContent(email.id, email.account || 'personal');
-    } catch {
-      fullEmail = email;
-    }
-  }
-
-  const draftText = await complete(draftReplyPrompt({ originalEmail: fullEmail }), { maxTokens: 600, purpose: 'email-draft' });
-
-  const draftId = state.saveDraft({
-    chatId,
-    emailId: email.id,
-    threadId: email.threadId,
-    toAddress: email.from,
-    subject: `Re: ${email.subject}`,
-    draftText,
-    account: email.account || 'personal',
-  });
-
-  const draftMsg =
-    `*Draft reply (ID: ${draftId}):*\n\n${draftText}\n\n` +
-    `Reply with:\n• *approve* — send this reply\n• *edit: [changes]* — rewrite it\n• *discard* — skip`;
-  await sendAlertFn(draftMsg);
-  logger.info(`[email-watcher] Draft ${draftId} created for: "${email.subject}"`);
 }
 
 module.exports = { checkNewEmails };
