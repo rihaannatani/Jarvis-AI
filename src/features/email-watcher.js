@@ -6,7 +6,7 @@ const config = require('../config');
 const { getRecentEmails } = require('../integrations/gmail');
 const { hasToken } = require('../integrations/calendar');
 
-const IMPORTANCE_THRESHOLD = 7;
+const IMPORTANCE_THRESHOLD = 8;
 
 // Domains that are always noise — skip Claude scoring entirely
 const NOISE_DOMAINS = [
@@ -17,6 +17,13 @@ const NOISE_DOMAINS = [
 // Automated sender patterns — skip Claude scoring
 const AUTOMATED_PATTERNS = [
   'noreply', 'no-reply', 'donotreply', 'notifications@', 'mailer@', 'bounce',
+  'system@', 'no-reply@', 'automated@', 'alert@',
+];
+
+// Keywords that indicate 2FA/OTP — skip Claude scoring
+const OTP_KEYWORDS = [
+  'verification code', 'authentication code', 'one-time', 'otp', '2fa', 'mfa',
+  'confirm your identity', 'security code', 'temporary code', 'expires after',
 ];
 
 function fromAddress(email) {
@@ -32,9 +39,17 @@ function isMySelf(email) {
 
 function isNoiseSender(email) {
   const from = (email.from || '').toLowerCase();
+  const subject = (email.subject || '').toLowerCase();
+  const snippet = (email.snippet || '').toLowerCase();
+
   if (NOISE_DOMAINS.some((d) => from.includes(d))) return true;
   if (AUTOMATED_PATTERNS.some((p) => from.includes(p))) return true;
   if (email.labelIds?.includes('CATEGORY_PROMOTIONS')) return true;
+
+  // 2FA/OTP codes: check subject and snippet for keywords
+  const content = subject + ' ' + snippet;
+  if (OTP_KEYWORDS.some((kw) => content.includes(kw))) return true;
+
   return false;
 }
 
